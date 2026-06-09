@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>遊戲 BOSS 出沒時間 - 王怪設定後台</title>
+    <!-- 引入美觀的 Bootstrap 5 CSS -->
+    <link href="https://jsdelivr.net" rel="stylesheet">
+    <!-- 引入 Supabase JS SDK -->
+    <script src="https://jsdelivr.net"></script>
+</head>
+<body class="bg-light">
+    <div class="container py-4">
+        <h2 class="text-center mb-4">👹 遊戲王怪重生時間維護後台</h2>
+
+        <!-- 表單：新增 / 修改王怪 -->
+        <div class="card mb-4 shadow-sm">
+            <div class="card-header bg-primary text-white font-weight-bold">➕ 新增 / 修改王怪</div>
+            <div class="card-body">
+                <form id="bossForm" class="row g-3">
+                    <div class="col-md-6">
+                        <label for="bossName" class="form-label">王怪名稱</label>
+                        <input type="text" class="form-control" id="bossName" placeholder="例如：巴風特" required>
+                    </div>
+                    <div class="col-md-4">
+                        <label for="interval" class="form-label">重生間隔 (分鐘)</label>
+                        <input type="number" class="form-control" id="interval" placeholder="例如：360" min="1" required>
+                    </div>
+                    <div class="col-md-2 d-flex align-items-end">
+                        <button type="submit" class="btn btn-success w-100">儲存設定</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- 列表：目前所有王怪 -->
+        <div class="card shadow-sm">
+            <div class="card-header bg-dark text-white font-weight-bold">📋 當前王怪 Config 清單</div>
+            <div class="card-body p-0">
+                <table class="table table-hover table-striped mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th class="ps-3">王怪名稱</th>
+                            <th>重生間隔 (分鐘)</th>
+                            <th class="text-center" style="width: 100px;">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="bossTableBody">
+                        <tr>
+                            <td colspan="3" class="text-center text-muted py-3">資料載入中...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ⚠️ 請替換成您在 Supabase 取得的憑證 (跟 Vercel 環境變數貼一樣的即可)
+        // 因為是前端公開網頁，使用 anon public key 是安全的
+        const SUPABASE_URL = "https://zwgfnaulqgqsafawtvkg.supabase.co/rest/v1/";
+        const SUPABASE_KEY = "sb_publishable_1ezjXwF72vK6TNCc6b72nA_lW6-raaZ";
+
+        // 初始化 Supabase 客戶端
+        const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        // 頁面載入完成後自動讀取資料
+        document.addEventListener('DOMContentLoaded', fetchBossConfigs);
+
+        // 異步抓取 Supabase 資料並渲染表格
+        async function fetchBossConfigs() {
+            const tableBody = document.getElementById('bossTableBody');
+            
+            const { data, error } = await supabase
+                .from('boss_config')
+                .select('*')
+                .order('boss_name', { ascending: true });
+
+            if (error) {
+                tableBody.innerHTML = `<tr><td colspan="3" class="text-center text-danger">讀取失敗: ${error.message}</td></tr>`;
+                return;
+            }
+
+            if (data.length === 0) {
+                tableBody.innerHTML = `<tr><td colspan="3" class="text-center text-muted py-3">目前沒有任何王怪設定</td></tr>`;
+                return;
+            }
+
+            tableBody.innerHTML = '';
+            data.forEach(boss => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td class="align-middle ps-3 fw-bold">${boss.boss_name}</td>
+                    <td class="align-middle">${boss.respawn_interval} 分鐘</td>
+                    <td class="text-center">
+                        <button class="btn btn-outline-danger btn-sm" onclick="deleteBoss('${boss.boss_name}')">刪除</button>
+                    </td>
+                `;
+                tableBody.appendChild(row);
+            });
+        }
+
+        // 表單送出：新增或修改 (Upsert)
+        document.getElementById('bossForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const boss_name = document.getElementById('bossName').value.trim().toUpperCase();
+            const respawn_interval = parseInt(document.getElementById('interval').value);
+
+            const { error } = await supabase
+                .from('boss_config')
+                .upsert({ boss_name, respawn_interval });
+
+            if (error) {
+                alert('儲存失敗: ' + error.message);
+            } else {
+                alert('✨ 儲存成功！');
+                document.getElementById('bossForm').reset();
+                fetchBossConfigs(); // 重新整理表格
+            }
+        });
+
+        // 刪除王怪功能
+        async function deleteBoss(boss_name) {
+            if (!confirm(`確定要刪除王怪「${boss_name}」嗎？\n這也會一併移除相關的歷史紀錄。`)) return;
+
+            // 先刪除群組內的擊殺紀錄，再刪除設定
+            await supabase.from('boss_records').delete().eq('boss_name', boss_name);
+            const { error } = await supabase.from('boss_config').delete().eq('boss_name', boss_name);
+
+            if (error) {
+                alert('刪除失敗: ' + error.message);
+            } else {
+                fetchBossConfigs(); // 重新整理表格
+            }
+        }
+    </script>
+</body>
+</html>
