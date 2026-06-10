@@ -18,11 +18,15 @@
             <div class="card-header bg-primary text-white font-weight-bold">➕ 新增 / 修改王怪</div>
             <div class="card-body">
                 <form id="bossForm" class="row g-3">
-                    <div class="col-md-6">
+                    <div class="col-md-5">
                         <label for="bossName" class="form-label">王怪名稱</label>
                         <input type="text" class="form-control" id="bossName" placeholder="例如：巴風特" required>
                     </div>
                     <div class="col-md-4">
+                        <label for="aliases" class="form-label">別名（逗號分隔，選填）</label>
+                        <input type="text" class="form-control" id="aliases" placeholder="例如：巴風, BOSS1">
+                    </div>
+                    <div class="col-md-3">
                         <label for="interval" class="form-label">重生間隔 (分鐘)</label>
                         <input type="number" class="form-control" id="interval" placeholder="example: 360" min="1" required>
                     </div>
@@ -88,8 +92,12 @@
             tableBody.innerHTML = '';
             data.forEach(boss => {
                 const row = document.createElement('tr');
+                const aliasesDisplay = boss.aliases ? (Array.isArray(boss.aliases) ? boss.aliases.join(', ') : boss.aliases) : '';
                 row.innerHTML = `
-                    <td class="align-middle ps-3 fw-bold">${boss.boss_name}</td>
+                    <td class="align-middle ps-3">
+                        <div class="fw-bold">${boss.boss_name}</div>
+                        <div class="small text-muted">${aliasesDisplay}</div>
+                    </td>
                     <td class="align-middle">${boss.respawn_interval} 分鐘</td>
                     <td class="text-center">
                         <button class="btn btn-outline-danger btn-sm" onclick="deleteBoss('${boss.boss_name}')">刪除</button>
@@ -104,10 +112,16 @@
             e.preventDefault();
             const boss_name = document.getElementById('bossName').value.trim().toUpperCase();
             const respawn_interval = parseInt(document.getElementById('interval').value);
+            const aliasesRaw = document.getElementById('aliases').value.trim();
+
+            // 轉成陣列以對應 Postgres text[] 欄位
+            const aliases = aliasesRaw ? aliasesRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+            const payload = { boss_name, respawn_interval, aliases };
 
             const { error } = await dbClient
                 .from('boss_config')
-                .upsert({ boss_name, respawn_interval });
+                .upsert(payload);
 
             if (error) {
                 alert('儲存失敗: ' + error.message);
