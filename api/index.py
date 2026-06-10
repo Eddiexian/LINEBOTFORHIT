@@ -70,7 +70,7 @@ def handle_message(event):
     # ────────────────────────────────────────────────────
     if user_msg == "K LIST" or user_msg == "KLIST":
         # 1. 先撈出全域支援的所有王怪 Config，確保沒擊殺紀錄的王也能出現在清單上供使用者點擊
-        config_resp = supabase.table("boss_config").select("*").order("boss_name", { "ascending": True }).execute()
+        config_resp = supabase.table("boss_config").select("*").order("boss_name", desc=False).execute()
         configs = config_resp.data
         
         if not configs:
