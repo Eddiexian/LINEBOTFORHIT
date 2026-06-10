@@ -229,7 +229,7 @@ def handle_message(event):
             data_to_save = {
                 "chat_id": chat_id, "boss_name": boss_name, "kill_time": kill_time.isoformat(), "next_spawn_time": next_spawn_time.isoformat(), "updated_by": user_id
             }
-            supabase.table("boss_records").upsert(data_to_save).execute()
+            supabase.table("boss_records").upsert(data_to_save, on_conflict="chat_id,boss_name").execute()
             
             k_date = kill_time.strftime("%m/%d")
             k_week = WEEK_DAYS[kill_time.weekday()]
