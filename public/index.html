@@ -4,10 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>遊戲 BOSS 出沒時間 - 王怪設定後台</title>
-    <!-- 引入美觀的 Bootstrap 5 CSS -->
-      <link href="https://cloudflare.com" rel="stylesheet">
-    <!-- 引入 Supabase JS SDK -->
-    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <!-- Bootstrap 5 CSS (CDN) -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Supabase JS (CDN) -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 </head>
 <body class="bg-light">
     <div class="container py-4">
@@ -24,7 +24,7 @@
                     </div>
                     <div class="col-md-4">
                         <label for="interval" class="form-label">重生間隔 (分鐘)</label>
-                        <input type="number" class="form-control" id="interval" placeholder="例如：360" min="1" required>
+                        <input type="number" class="form-control" id="interval" placeholder="example: 360" min="1" required>
                     </div>
                     <div class="col-md-2 d-flex align-items-end">
                         <button type="submit" class="btn btn-success w-100">儲存設定</button>
@@ -56,13 +56,12 @@
     </div>
 
     <script>
-        // ⚠️ 請替換成您在 Supabase 取得的憑證 (跟 Vercel 環境變數貼一樣的即可)
-        // 因為是前端公開網頁，使用 anon public key 是安全的
-        const SUPABASE_URL = "https://zwgfnaulqgqsafawtvkg.supabase.co/rest/v1/";
+        // 設定專案網址與公開憑證
+        const SUPABASE_URL = "https://zwgfnaulqgqsafawtvkg.supabase.co";
         const SUPABASE_KEY = "sb_publishable_1ezjXwF72vK6TNCc6b72nA_lW6-raaZ";
 
-        // 初始化 Supabase 客戶端
-        const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+        // 使用 dbClient 作為變數名稱，徹底解決大腦覆蓋與衝突問題
+        const dbClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
         // 頁面載入完成後自動讀取資料
         document.addEventListener('DOMContentLoaded', fetchBossConfigs);
@@ -71,7 +70,7 @@
         async function fetchBossConfigs() {
             const tableBody = document.getElementById('bossTableBody');
             
-            const { data, error } = await supabase
+            const { data, error } = await dbClient
                 .from('boss_config')
                 .select('*')
                 .order('boss_name', { ascending: true });
@@ -106,7 +105,7 @@
             const boss_name = document.getElementById('bossName').value.trim().toUpperCase();
             const respawn_interval = parseInt(document.getElementById('interval').value);
 
-            const { error } = await supabase
+            const { error } = await dbClient
                 .from('boss_config')
                 .upsert({ boss_name, respawn_interval });
 
@@ -124,8 +123,8 @@
             if (!confirm(`確定要刪除王怪「${boss_name}」嗎？\n這也會一併移除相關的歷史紀錄。`)) return;
 
             // 先刪除群組內的擊殺紀錄，再刪除設定
-            await supabase.from('boss_records').delete().eq('boss_name', boss_name);
-            const { error } = await supabase.from('boss_config').delete().eq('boss_name', boss_name);
+            await dbClient.from('boss_records').delete().eq('boss_name', boss_name);
+            const { error } = await dbClient.from('boss_config').delete().eq('boss_name', boss_name);
 
             if (error) {
                 alert('刪除失敗: ' + error.message);
