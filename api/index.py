@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request, HTTPException
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import MessageEvent, TextMessage, TextSendMessage, FlexSendMessage
 from supabase import create_client, Client
 import os
 from datetime import datetime, timedelta
@@ -18,7 +18,6 @@ line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# 星期幾的中文對照表
 WEEK_DAYS = ["一", "二", "三", "四", "五", "六", "日"]
 
 @app.get("/api")
@@ -37,7 +36,6 @@ async def callback(request: Request):
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    # 1. 取得群組或個人 ID，達成資料隔離
     source_type = event.source.type
     if source_type == "group":
         chat_id = event.source.group_id
@@ -48,95 +46,134 @@ def handle_message(event):
         
     user_id = event.source.user_id 
 
-    # 2. 安全清洗文字 (轉大寫、去前後空格)
     raw_msg = event.message.text.strip().upper()
     
-    # 精準尋找最後一個 K 字母的位置，防止群組 Tag 或是使用者英文名字含有 K 導致斷詞出錯
     user_msg = raw_msg
     if "K" in raw_msg:
         k_index = raw_msg.rfind("K")
         user_msg = raw_msg[k_index:].strip()
 
-    # ----------------------------------------------------
-    # 情況 A：查詢群組專屬清單 K LIST
-    # ----------------------------------------------------
+    # ────────────────────────────────────────────────────
+    # 情況 A：查詢群組專屬清單 K LIST (升級為高級 Flex Message 表格)
+    # ────────────────────────────────────────────────────
     if user_msg == "K LIST" or user_msg == "KLIST":
         response = supabase.table("boss_records").select("*").eq("chat_id", chat_id).execute()
         records = response.data
         
         if not records:
-            reply_text = "📊 【王怪出沒情報清單】\n──────────────────\n目前本群組沒有任何擊殺追蹤紀錄。"
-        else:
-            reply_text = "📊 【王怪重生即時追蹤清單】\n──────────────────\n"
-            # 依據重生時間由近到遠排序
-            records.sort(key=lambda x: x["next_spawn_time"])
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📊 目前本群組沒有任何王怪追蹤紀錄。"))
+            return
             
-            for rec in records:
-                boss_name = rec["boss_name"]
-                # 解析 Supabase 時間戳記並套用時區
-                next_time = datetime.fromisoformat(rec["next_spawn_time"].replace("Z", "+00:00"))
-                
-                # 計算倒數計時
-                now = datetime.now(next_time.tzinfo)
-                countdown = next_time - now
-                minutes_left = int(countdown.total_seconds() / 60)
-                
-                # 格式化日期與時間資訊
-                date_str = next_time.strftime("%m/%d")
-                time_str = next_time.strftime("%H:%M")
-                weekday_str = WEEK_DAYS[next_time.weekday()]
-                
-                if minutes_left > 0:
-                    # 計算剩餘小時與分鐘數
-                    hours = minutes_left // 60
-                    mins = minutes_left % 60
-                    countdown_str = f"還有 {hours}小時{mins}分" if hours > 0 else f"還有 {mins}分鐘"
-                    
-                    reply_text += f"🟢 〖{boss_name}〗\n📅 時間：{date_str} ({weekday_str}) {time_str}\n⏳ 狀態：{countdown_str}\n──────────────────\n"
-                else:
-                    # 計算超時小時與分鐘數
-                    over_minutes = -minutes_left
-                    hours = over_minutes // 60
-                    mins = over_minutes % 60
-                    over_str = f"超時 {hours}小時{mins}分" if hours > 0 else f"超時 {mins}分鐘"
-                    
-                    reply_text += f"🔴 〖{boss_name}〗\n📅 時間：{date_str} ({weekday_str}) {time_str}\n⚠️ 狀態：💥 已過時！({over_str})\n──────────────────\n"
+        records.sort(key=lambda x: x["next_spawn_time"])
         
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text.strip("─\n")))
+        # 建立 Flex Message 的表格行 (rows)
+        table_rows = []
+        
+        # 表格標頭 (Header Row)
+        table_rows.append({
+            "type": "box", "layout": "horizontal", "backgroundColor": "#212529", "paddingTop": "8px", "paddingBottom": "8px",
+            "contents": [
+                {"type": "text", "text": "狀態", "color": "#ffffff", "size": "sm", "weight": "bold", "flex": 1, "align": "center"},
+                {"type": "text", "text": "王怪名稱", "color": "#ffffff", "size": "sm", "weight": "bold", "flex": 2, "align": "center"},
+                {"type": "text", "text": "出沒時間", "color": "#ffffff", "size": "sm", "weight": "bold", "flex": 3, "align": "center"},
+                {"type": "text", "text": "倒數/超時", "color": "#ffffff", "size": "sm", "weight": "bold", "flex": 3, "align": "center"}
+            ]
+        })
+        
+        # 走訪每筆紀錄並動態畫出表格列
+        for idx, rec in enumerate(records):
+            boss_name = rec["boss_name"]
+            next_time = datetime.fromisoformat(rec["next_spawn_time"].replace("Z", "+00:00"))
+            
+            now = datetime.now(next_time.tzinfo)
+            countdown = next_time - now
+            minutes_left = int(countdown.total_seconds() / 60)
+            
+            date_str = next_time.strftime("%m/%d")
+            time_str = next_time.strftime("%H:%M")
+            weekday_str = WEEK_DAYS[next_time.weekday()]
+            
+            # 斑馬紋底色
+            row_bg = "#f8f9fa" if idx % 2 == 0 else "#ffffff"
+            
+            if minutes_left > 0:
+                status_color = "#28a745" # 綠色代表重生中
+                status_text = "⏳"
+                hours = minutes_left // 60
+                mins = minutes_left % 60
+                time_diff_str = f"{hours}h{mins}m" if hours > 0 else f"{mins}m"
+                diff_color = "#17a2b8"
+            else:
+                status_color = "#dc3545" # 紅色代表超時
+                status_text = "💥"
+                over_minutes = -minutes_left
+                hours = over_minutes // 60
+                mins = over_minutes % 60
+                time_diff_str = f"已過 {hours}h{mins}m" if hours > 0 else f"已過 {mins}m"
+                diff_color = "#dc3545"
+            
+            # 加入資料列
+            table_rows.append({
+                "type": "box", "layout": "horizontal", "backgroundColor": row_bg, "paddingTop": "10px", "paddingBottom": "10px", "alignItems": "center",
+                "contents": [
+                    {"type": "text", "text": status_text, "size": "sm", "flex": 1, "align": "center"},
+                    {"type": "text", "text": boss_name, "size": "sm", "weight": "bold", "color": "#333333", "flex": 2, "align": "center"},
+                    {"type": "text", "text": f"{date_str}({weekday_str}) {time_str}", "size": "xs", "color": "#555555", "flex": 3, "align": "center"},
+                    {"type": "text", "text": time_diff_str, "size": "xs", "weight": "bold", "color": diff_color, "flex": 3, "align": "center"}
+                ]
+            })
+            
+        # 封裝成完整的 LINE Flex 氣泡 JSON
+        flex_contents = {
+            "type": "bubble",
+            "size": "giga", # 使用最寬的版面寬度
+            "header": {
+                "type": "box", "layout": "vertical", "backgroundColor": "#007bff", "paddingTop": "15px", "paddingBottom": "15px",
+                "contents": [
+                    {"type": "text", "text": "👹 王怪出沒時間追蹤看板", "color": "#ffffff", "weight": "bold", "size": "md", "align": "center"}
+                ]
+            },
+            "body": {
+                "type": "box", "layout": "vertical", "paddingAll": "0px",
+                "contents": table_rows
+            },
+            "footer": {
+                "type": "box", "layout": "vertical", "backgroundColor": "#f1f3f5", "paddingAll": "8px",
+                "contents": [
+                    {"type": "text", "text": "💡 提示：輸入「K [王怪名]」可即時回報擊殺時間", "size": "xs", "color": "#6c757d", "align": "center"}
+                ]
+            }
+        }
+        
+        # 發送高級 Flex 訊息
+        line_bot_api.reply_message(
+            event.reply_token, 
+            FlexSendMessage(alt_text="📊 王怪追蹤時間看板", contents=flex_contents)
+        )
         return
 
-    # ----------------------------------------------------
-    # 情況 B：回報擊殺 K [王怪名稱] (例如: K 巴風特)
-    # ----------------------------------------------------
+    # ────────────────────────────────────────────────────
+    # 情況 B：回報擊殺 K [王怪名稱]
+    # ────────────────────────────────────────────────────
     if user_msg.startswith("K"):
         boss_name = user_msg.replace("K", "").strip()
         
-        # 安全防護：如果指令只有打 K 或者後面是 LIST，直接忽略
         if not boss_name or boss_name == "LIST":
             return
             
-        # 至 Supabase 查詢該王怪在網頁設定的重生間隔
         config_resp = supabase.table("boss_config").select("*").eq("boss_name", boss_name).execute()
         
         if config_resp.data:
-            # 【Bug 修正】精準獲取陣列中第一筆設定的重生成格
             interval = config_resp.data[0]["respawn_interval"]
             
-            # 以台灣時間（UTC+8）計算擊殺與下次重生時間
             kill_time = datetime.now() + timedelta(hours=8)
             next_spawn_time = kill_time + timedelta(minutes=interval)
             
-            # 封裝資料並 Upsert 到資料庫 (chat_id + boss_name 唯一)
             data_to_save = {
-                "chat_id": chat_id,
-                "boss_name": boss_name,
-                "kill_time": kill_time.isoformat(),
-                "next_spawn_time": next_spawn_time.isoformat(),
-                "updated_by": user_id
+                "chat_id": chat_id, "boss_name": boss_name, "kill_time": kill_time.isoformat(), "next_spawn_time": next_spawn_time.isoformat(), "updated_by": user_id
             }
             supabase.table("boss_records").upsert(data_to_save).execute()
             
-            # 格式化日期與星期
             k_date = kill_time.strftime("%m/%d")
             k_week = WEEK_DAYS[kill_time.weekday()]
             n_date = next_spawn_time.strftime("%m/%d")
