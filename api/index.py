@@ -6,7 +6,7 @@ from supabase import create_client, Client
 import os
 from datetime import datetime, timedelta
 
-app = FastAPI()
+app = FastAPI(redirect_slashes=False)
 
 # 載入環境變數
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
