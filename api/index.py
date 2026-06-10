@@ -232,7 +232,6 @@ def handle_message(event):
             supabase.table("boss_records").upsert(data_to_save).execute()
             
             k_date = kill_time.strftime("%m/%d")
-                        k_date = kill_time.strftime("%m/%d")
             k_week = WEEK_DAYS[kill_time.weekday()]
             n_date = next_spawn_time.strftime("%m/%d")
             n_week = WEEK_DAYS[next_spawn_time.weekday()]
