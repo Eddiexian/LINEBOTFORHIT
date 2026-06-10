@@ -36,6 +36,7 @@ async def callback(request: Request):
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
+    # 1. 取得群組或個人 ID，達成資料隔離
     source_type = event.source.type
     if source_type == "group":
         chat_id = event.source.group_id
@@ -46,91 +47,147 @@ def handle_message(event):
         
     user_id = event.source.user_id 
 
+    # 2. 安全清洗文字 (轉大寫、去前後空格)
     raw_msg = event.message.text.strip().upper()
     
+    # 精準尋找最後一個 K 字母的位置，防止群組 Tag 或是使用者英文名字含有 K 導致斷詞出錯
     user_msg = raw_msg
     if "K" in raw_msg:
         k_index = raw_msg.rfind("K")
         user_msg = raw_msg[k_index:].strip()
 
     # ────────────────────────────────────────────────────
-    # 情況 A：查詢群組專屬清單 K LIST (升級為高級 Flex Message 表格)
+    # 情況 A：【功能新增】清空本群所有紀錄 K CLEAR
+    # ────────────────────────────────────────────────────
+    if user_msg == "K CLEAR" or user_msg == "KCLEAR":
+        # 僅刪除當前 chat_id (該群組) 的擊殺紀錄，不影響王怪 Config 設定
+        supabase.table("boss_records").delete().eq("chat_id", chat_id).execute()
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="🗑️ 已成功清空本群組的所有王怪重生追蹤紀錄！"))
+        return
+
+    # ────────────────────────────────────────────────────
+    # 情況 B：查詢群組專屬清單 K LIST (終極彈性按鈕表格版)
     # ────────────────────────────────────────────────────
     if user_msg == "K LIST" or user_msg == "KLIST":
-        response = supabase.table("boss_records").select("*").eq("chat_id", chat_id).execute()
-        records = response.data
+        # 1. 先撈出全域支援的所有王怪 Config，確保沒擊殺紀錄的王也能出現在清單上供使用者點擊
+        config_resp = supabase.table("boss_config").select("*").order("boss_name", { "ascending": True }).execute()
+        configs = config_resp.data
         
-        if not records:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📊 目前本群組沒有任何王怪追蹤紀錄。"))
+        if not configs:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📊 系統內目前沒有任何王怪設定，請先至網頁後台新增。"))
             return
-            
-        records.sort(key=lambda x: x["next_spawn_time"])
+
+        # 2. 撈出本群組目前的擊殺紀錄
+        records_resp = supabase.table("boss_records").select("*").eq("chat_id", chat_id).execute()
+        records_map = {rec["boss_name"]: rec for rec in records_resp.data}
         
-        # 建立 Flex Message 的表格行 (rows)
+        # 3. 整合兩張表的資料並進行排序邏輯
+        combined_list = []
+        for cfg in configs:
+            name = cfg["boss_name"]
+            if name in records_map:
+                rec = records_map[name]
+                next_time = datetime.fromisoformat(rec["next_spawn_time"].replace("Z", "+00:00"))
+                # 用於排序的時間戳記
+                sort_timestamp = next_time.timestamp()
+                status = "tracked"
+            else:
+                next_time = None
+                # 未擊殺的王怪，其排序權重設為無限大（強迫排在表格最下面）
+                sort_timestamp = float('inf')
+                status = "unknown"
+                
+            combined_list.append({
+                "boss_name": name,
+                "next_time": next_time,
+                "sort_key": sort_timestamp,
+                "status": status
+            })
+            
+        # 👑 【UIUX 優化】依據出沒時間由近到遠精準排序（最快重生的置頂）
+        combined_list.sort(key=lambda x: x["sort_key"])
+        
+        # 4. 開始繪製 LINE Flex 網格表格 Rows
         table_rows = []
         
-        # 表格標頭 (Header Row)
+        # 表格標頭列 (Header Row)
         table_rows.append({
-            "type": "box", "layout": "horizontal", "backgroundColor": "#212529", "paddingTop": "8px", "paddingBottom": "8px",
+            "type": "box", "layout": "horizontal", "backgroundColor": "#1a1d20", "paddingTop": "8px", "paddingBottom": "8px",
             "contents": [
                 {"type": "text", "text": "狀態", "color": "#ffffff", "size": "sm", "weight": "bold", "flex": 1, "align": "center"},
                 {"type": "text", "text": "王怪名稱", "color": "#ffffff", "size": "sm", "weight": "bold", "flex": 2, "align": "center"},
-                {"type": "text", "text": "出沒時間", "color": "#ffffff", "size": "sm", "weight": "bold", "flex": 3, "align": "center"},
-                {"type": "text", "text": "倒數/超時", "color": "#ffffff", "size": "sm", "weight": "bold", "flex": 3, "align": "center"}
+                {"type": "text", "text": "預計出沒時間", "color": "#ffffff", "size": "xs", "weight": "bold", "flex": 3, "align": "center"},
+                {"type": "text", "text": "快速回報", "color": "#ffffff", "size": "sm", "weight": "bold", "flex": 2, "align": "center"}
             ]
         })
         
-        # 走訪每筆紀錄並動態畫出表格列
-        for idx, rec in enumerate(records):
-            boss_name = rec["boss_name"]
-            next_time = datetime.fromisoformat(rec["next_spawn_time"].replace("Z", "+00:00"))
+        # 動態渲染資料列
+        for idx, item in enumerate(combined_list):
+            boss_name = item["boss_name"]
+            next_time = item["next_time"]
             
-            now = datetime.now(next_time.tzinfo)
-            countdown = next_time - now
-            minutes_left = int(countdown.total_seconds() / 60)
+            row_bg = "#f8f9fa" if idx % 2 == 0 else "#ffffff" # 斑馬紋
             
-            date_str = next_time.strftime("%m/%d")
-            time_str = next_time.strftime("%H:%M")
-            weekday_str = WEEK_DAYS[next_time.weekday()]
-            
-            # 斑馬紋底色
-            row_bg = "#f8f9fa" if idx % 2 == 0 else "#ffffff"
-            
-            if minutes_left > 0:
-                status_color = "#28a745" # 綠色代表重生中
-                status_text = "⏳"
-                hours = minutes_left // 60
-                mins = minutes_left % 60
-                time_diff_str = f"{hours}h{mins}m" if hours > 0 else f"{mins}m"
-                diff_color = "#17a2b8"
+            # 判斷時間與倒數
+            if item["status"] == "unknown":
+                status_icon = "⚪"
+                time_display = "⚠️ 尚未回報"
+                diff_display = ""
             else:
-                status_color = "#dc3545" # 紅色代表超時
-                status_text = "💥"
-                over_minutes = -minutes_left
-                hours = over_minutes // 60
-                mins = over_minutes % 60
-                time_diff_str = f"已過 {hours}h{mins}m" if hours > 0 else f"已過 {mins}m"
-                diff_color = "#dc3545"
-            
-            # 加入資料列
+                now = datetime.now(next_time.tzinfo)
+                countdown = next_time - now
+                minutes_left = int(countdown.total_seconds() / 60)
+                
+                date_str = next_time.strftime("%m/%d")
+                time_str = next_time.strftime("%H:%M")
+                weekday_str = WEEK_DAYS[next_time.weekday()]
+                time_display = f"{date_str}({weekday_str}) {time_str}"
+                
+                if minutes_left > 0:
+                    status_icon = "🟢" # 重生中
+                    hours = minutes_left // 60
+                    mins = minutes_left % 60
+                    diff_display = f"\n({hours}h{mins}m後)" if hours > 0 else f"\n({mins}m後)"
+                else:
+                    status_icon = "🔴" # 已超時
+                    over_minutes = -minutes_left
+                    hours = over_minutes // 60
+                    mins = over_minutes % 60
+                    diff_display = f"\n(過{hours}h{mins}m)" if hours > 0 else f"\n(過{mins}m)"
+
+            # 加入整合好的表格列資料
             table_rows.append({
                 "type": "box", "layout": "horizontal", "backgroundColor": row_bg, "paddingTop": "10px", "paddingBottom": "10px", "alignItems": "center",
                 "contents": [
-                    {"type": "text", "text": status_text, "size": "sm", "flex": 1, "align": "center"},
-                    {"type": "text", "text": boss_name, "size": "sm", "weight": "bold", "color": "#333333", "flex": 2, "align": "center"},
-                    {"type": "text", "text": f"{date_str}({weekday_str}) {time_str}", "size": "xs", "color": "#555555", "flex": 3, "align": "center"},
-                    {"type": "text", "text": time_diff_str, "size": "xs", "weight": "bold", "color": diff_color, "flex": 3, "align": "center"}
+                    {"type": "text", "text": status_icon, "size": "sm", "flex": 1, "align": "center"},
+                    {"type": "text", "text": boss_name, "size": "sm", "weight": "bold", "color": "#212529", "flex": 2, "align": "center"},
+                    {
+                        "type": "text", "text": f"{time_display}{diff_display}", "size": "xs", "color": "#495057", "flex": 3, "align": "center", "wrap": True
+                    },
+                    # 👑 【UIUX 優化】每一列右側都加入一鍵回報的「擊殺按鈕」
+                    {
+                        "type": "button",
+                        "style": "secondary",
+                        "color": "#dc3545",
+                        "height": "sm",
+                        "flex": 2,
+                        "action": {
+                            "type": "message",
+                            "label": "⚔️ 擊殺",
+                            "text": f"K {boss_name}" # 點擊後會由該使用者帳號在群組自動喊出「K 王怪名稱」
+                        }
+                    }
                 ]
             })
             
-        # 封裝成完整的 LINE Flex 氣泡 JSON
+        # 封裝 Flex Bubble 結構
         flex_contents = {
             "type": "bubble",
-            "size": "giga", # 使用最寬的版面寬度
+            "size": "giga",
             "header": {
-                "type": "box", "layout": "vertical", "backgroundColor": "#007bff", "paddingTop": "15px", "paddingBottom": "15px",
+                "type": "box", "layout": "vertical", "backgroundColor": "#0d6efd", "paddingTop": "15px", "paddingBottom": "15px",
                 "contents": [
-                    {"type": "text", "text": "👹 王怪出沒時間追蹤看板", "color": "#ffffff", "weight": "bold", "size": "md", "align": "center"}
+                    {"type": "text", "text": "⚔️ 王怪即時重生戰報看板 ⚔️", "color": "#ffffff", "weight": "bold", "size": "md", "align": "center"}
                 ]
             },
             "body": {
@@ -138,27 +195,27 @@ def handle_message(event):
                 "contents": table_rows
             },
             "footer": {
-                "type": "box", "layout": "vertical", "backgroundColor": "#f1f3f5", "paddingAll": "8px",
+                "type": "box", "layout": "vertical", "backgroundColor": "#e9ecef", "paddingAll": "10px",
                 "contents": [
-                    {"type": "text", "text": "💡 提示：輸入「K [王怪名]」可即時回報擊殺時間", "size": "xs", "color": "#6c757d", "align": "center"}
+                    {"type": "text", "text": "💡 提示：點擊右側 [⚔️ 擊殺] 按鈕可直接回報", "size": "xs", "color": "#495057", "align": "center", "margin": "none"},
+                    {"type": "text", "text": "🧹 輸入「K CLEAR」可清空本群所有紀錄", "size": "xs", "color": "#6c757d", "align": "center", "margin": "xs"}
                 ]
             }
         }
         
-        # 發送高級 Flex 訊息
         line_bot_api.reply_message(
             event.reply_token, 
-            FlexSendMessage(alt_text="📊 王怪追蹤時間看板", contents=flex_contents)
+            FlexSendMessage(alt_text="📊 網格王怪追蹤時間看板", contents=flex_contents)
         )
         return
 
     # ────────────────────────────────────────────────────
-    # 情況 B：回報擊殺 K [王怪名稱]
+    # 情況 C：回報擊殺 K [王怪名稱] (保持原有精美戰報回覆)
     # ────────────────────────────────────────────────────
     if user_msg.startswith("K"):
         boss_name = user_msg.replace("K", "").strip()
         
-        if not boss_name or boss_name == "LIST":
+        if not boss_name or boss_name == "LIST" or boss_name == "CLEAR":
             return
             
         config_resp = supabase.table("boss_config").select("*").eq("boss_name", boss_name).execute()
@@ -175,6 +232,7 @@ def handle_message(event):
             supabase.table("boss_records").upsert(data_to_save).execute()
             
             k_date = kill_time.strftime("%m/%d")
+                        k_date = kill_time.strftime("%m/%d")
             k_week = WEEK_DAYS[kill_time.weekday()]
             n_date = next_spawn_time.strftime("%m/%d")
             n_week = WEEK_DAYS[next_spawn_time.weekday()]
