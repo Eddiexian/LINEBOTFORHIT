@@ -218,35 +218,52 @@ def handle_message(event):
         if not boss_name or boss_name == "LIST" or boss_name == "CLEAR":
             return
             
-        config_resp = supabase.table("boss_config").select("*").eq("boss_name", boss_name).execute()
-        
-        if config_resp.data:
-            interval = config_resp.data[0]["respawn_interval"]
-            
+        # 先撈取所有 BOSS 設定，用於正式名稱與別名比對
+        configs_resp = supabase.table("boss_config").select("*").execute()
+        configs = configs_resp.data or []
+
+        found_cfg = None
+        for cfg in configs:
+            official = cfg.get("boss_name")
+            if official and official.upper() == boss_name:
+                found_cfg = cfg
+                break
+            # 支援多種別名欄位格式：'aliases' (string comma-separated) 或 list
+            aliases = cfg.get("aliases") or cfg.get("alias")
+            if aliases:
+                if isinstance(aliases, str):
+                    alias_list = [a.strip().upper() for a in aliases.split(",") if a.strip()]
+                elif isinstance(aliases, (list, tuple)):
+                    alias_list = [str(a).strip().upper() for a in aliases]
+                else:
+                    alias_list = []
+                if boss_name in alias_list:
+                    found_cfg = cfg
+                    break
+
+        if found_cfg:
+            real_name = found_cfg.get("boss_name")
+            interval = found_cfg.get("respawn_interval")
+
             kill_time = datetime.now() + timedelta(hours=8)
             next_spawn_time = kill_time + timedelta(minutes=interval)
-            
+
             data_to_save = {
-                "chat_id": chat_id, "boss_name": boss_name, "kill_time": kill_time.isoformat(), "next_spawn_time": next_spawn_time.isoformat(), "updated_by": user_id
+                "chat_id": chat_id,
+                "boss_name": real_name,
+                "kill_time": kill_time.isoformat(),
+                "next_spawn_time": next_spawn_time.isoformat(),
+                "updated_by": user_id,
             }
             supabase.table("boss_records").upsert(data_to_save, on_conflict="chat_id,boss_name").execute()
-            
-            k_date = kill_time.strftime("%m/%d")
-            k_week = WEEK_DAYS[kill_time.weekday()]
-            n_date = next_spawn_time.strftime("%m/%d")
-            n_week = WEEK_DAYS[next_spawn_time.weekday()]
-            
+
             reply_text = (
-                f"📝 【戰報：BOSS擊殺成功】\n"
-                f"──────────────────\n"
-                f"👹 追蹤對象：〖 {boss_name} 〗\n"
-                f"⚔️ 擊殺時間：{k_date} ({k_week}) {kill_time.strftime('%H:%M')}\n"
-                f"⏱️ 重生間隔：{interval} 分鐘\n"
-                f"──────────────────\n"
-                f"🎯 預計下一次出沒時間：\n"
-                f"👉 【 {n_date} ({n_week}) {next_spawn_time.strftime('%H:%M')} 】"
+                f"擊殺：{real_name}\n"
+                f"擊殺時間：{kill_time.strftime('%m/%d %H:%M')}\n"
+                f"下一次：{next_spawn_time.strftime('%m/%d %H:%M')}\n"
+                f"間隔：{interval} 分鐘"
             )
         else:
-            reply_text = f"❌ 追蹤失敗\n找不到BOSS「{boss_name}」的設定配置。\n💡 請點擊網頁後台手動新增該BOSS！"
-            
+            reply_text = f"找不到王怪：{boss_name}，請至後台新增。"
+
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
