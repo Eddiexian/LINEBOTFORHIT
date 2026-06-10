@@ -117,7 +117,7 @@ def handle_message(event):
                 {"type": "text", "text": "狀態", "color": "#ffffff", "size": "xs", "weight": "bold", "flex": 1, "align": "center"},
                 {"type": "text", "text": "王怪", "color": "#ffffff", "size": "xs", "weight": "bold", "flex": 3, "align": "center"},
                 {"type": "text", "text": "出沒", "color": "#ffffff", "size": "xs", "weight": "bold", "flex": 3, "align": "center"},
-                {"type": "text", "text": "", "color": "#ffffff", "size": "xs", "flex": 1}
+                {"type": "text", "text": " ", "color": "#ffffff", "size": "xs", "flex": 1}
             ]
         })
         
