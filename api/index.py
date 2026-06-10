@@ -110,14 +110,14 @@ def handle_message(event):
         # 4. 開始繪製 LINE Flex 網格表格 Rows
         table_rows = []
         
-        # 表格標頭列（精簡）
+        # 表格標頭列 (Header Row)
         table_rows.append({
-            "type": "box", "layout": "horizontal", "backgroundColor": "#101418", "paddingTop": "6px", "paddingBottom": "6px",
+            "type": "box", "layout": "horizontal", "backgroundColor": "#1a1d20", "paddingTop": "8px", "paddingBottom": "8px",
             "contents": [
-                {"type": "text", "text": "狀態", "color": "#ffffff", "size": "xs", "weight": "bold", "flex": 1, "align": "center"},
-                {"type": "text", "text": "王怪", "color": "#ffffff", "size": "xs", "weight": "bold", "flex": 3, "align": "center"},
-                {"type": "text", "text": "出沒", "color": "#ffffff", "size": "xs", "weight": "bold", "flex": 3, "align": "center"},
-                {"type": "text", "text": " ", "color": "#ffffff", "size": "xs", "flex": 1}
+                {"type": "text", "text": "狀態", "color": "#ffffff", "size": "sm", "weight": "bold", "flex": 1, "align": "center"},
+                {"type": "text", "text": "BOSS名稱", "color": "#ffffff", "size": "sm", "weight": "bold", "flex": 2, "align": "center"},
+                {"type": "text", "text": "預計出沒時間", "color": "#ffffff", "size": "xs", "weight": "bold", "flex": 3, "align": "center"},
+                {"type": "text", "text": "快速回報", "color": "#ffffff", "size": "sm", "weight": "bold", "flex": 2, "align": "center"}
             ]
         })
         
@@ -128,32 +128,55 @@ def handle_message(event):
             
             row_bg = "#f8f9fa" if idx % 2 == 0 else "#ffffff" # 斑馬紋
             
-            # 判斷時間與倒數（精簡顯示為 MM/DD HH:MM 與剩餘分鐘）
+            # 判斷時間與倒數
             if item["status"] == "unknown":
                 status_icon = "⚪"
-                time_display = "未回報"
+                time_display = "⚠️ 尚未回報"
                 diff_display = ""
             else:
                 now = datetime.now(next_time.tzinfo)
                 countdown = next_time - now
                 minutes_left = int(countdown.total_seconds() / 60)
-
-                time_display = next_time.strftime("%m/%d %H:%M")
+                
+                date_str = next_time.strftime("%m/%d")
+                time_str = next_time.strftime("%H:%M")
+                weekday_str = WEEK_DAYS[next_time.weekday()]
+                time_display = f"{date_str}({weekday_str}) {time_str}"
+                
                 if minutes_left > 0:
-                    status_icon = "🟢"
-                    diff_display = f"{minutes_left}m"
+                    status_icon = "🟢" # 重生中
+                    hours = minutes_left // 60
+                    mins = minutes_left % 60
+                    diff_display = f"\n({hours}h{mins}m後)" if hours > 0 else f"\n({mins}m後)"
                 else:
-                    status_icon = "🔴"
-                    diff_display = f"-{abs(minutes_left)}m"
+                    status_icon = "🔴" # 已超時
+                    over_minutes = -minutes_left
+                    hours = over_minutes // 60
+                    mins = over_minutes % 60
+                    diff_display = f"\n(過{hours}h{mins}m)" if hours > 0 else f"\n(過{mins}m)"
 
-            # 加入整合好的表格列資料（精簡）
+            # 加入整合好的表格列資料
             table_rows.append({
-                "type": "box", "layout": "horizontal", "backgroundColor": row_bg, "paddingTop": "8px", "paddingBottom": "8px", "alignItems": "center",
+                "type": "box", "layout": "horizontal", "backgroundColor": row_bg, "paddingTop": "10px", "paddingBottom": "10px", "alignItems": "center",
                 "contents": [
-                    {"type": "text", "text": status_icon, "size": "xs", "flex": 1, "align": "center"},
-                    {"type": "text", "text": boss_name, "size": "xs", "weight": "bold", "color": "#212529", "flex": 3, "align": "center"},
-                    {"type": "text", "text": f"{time_display} {diff_display}".strip(), "size": "xs", "color": "#495057", "flex": 3, "align": "center", "wrap": True},
-                    {"type": "button", "style": "secondary", "color": "#dc3545", "height": "sm", "flex": 1, "action": {"type": "message", "label": "擊殺", "text": f"K {boss_name}"}}
+                    {"type": "text", "text": status_icon, "size": "sm", "flex": 1, "align": "center"},
+                    {"type": "text", "text": boss_name, "size": "sm", "weight": "bold", "color": "#212529", "flex": 2, "align": "center"},
+                    {
+                        "type": "text", "text": f"{time_display}", "size": "xs", "color": "#495057", "flex": 3, "align": "center", "wrap": True
+                    },
+                    # 👑 【UIUX 優化】每一列右側都加入一鍵回報的「擊殺按鈕」
+                    {
+                        "type": "button",
+                        "style": "secondary",
+                        "color": "#dc3545",
+                        "height": "sm",
+                        "flex": 2,
+                        "action": {
+                            "type": "message",
+                            "label": "擊殺",
+                            "text": f"K {boss_name}" # 點擊後會由該使用者帳號在群組自動喊出「K BOSS名稱」
+                        }
+                    }
                 ]
             })
             
@@ -161,14 +184,23 @@ def handle_message(event):
         flex_contents = {
             "type": "bubble",
             "size": "giga",
-            "header": {"type": "box", "layout": "vertical", "backgroundColor": "#0d6efd", "paddingTop": "10px", "paddingBottom": "10px",
-                "contents": [{"type": "text", "text": "王怪看板", "color": "#ffffff", "weight": "bold", "size": "sm", "align": "center"}]},
+            "header": {
+                "type": "box", "layout": "vertical", "backgroundColor": "#0d6efd", "paddingTop": "15px", "paddingBottom": "15px",
+                "contents": [
+                    {"type": "text", "text": "BOSS重生戰報", "color": "#ffffff", "weight": "bold", "size": "md", "align": "center"}
+                ]
+            },
             "body": {
                 "type": "box", "layout": "vertical", "paddingAll": "0px",
                 "contents": table_rows
             },
-            "footer": {"type": "box", "layout": "vertical", "backgroundColor": "#e9ecef", "paddingAll": "8px",
-                "contents": [{"type": "text", "text": "快速回報：按擊殺或輸入 K 名稱", "size": "xs", "color": "#495057", "align": "center"}]}
+            "footer": {
+                "type": "box", "layout": "vertical", "backgroundColor": "#e9ecef", "paddingAll": "10px",
+                "contents": [
+                    {"type": "text", "text": "💡 提示：點擊右側 [擊殺] 按鈕可直接回報", "size": "xs", "color": "#495057", "align": "center", "margin": "none"},
+                    {"type": "text", "text": "🧹 輸入「K CLEAR」可清空本群所有紀錄", "size": "xs", "color": "#6c757d", "align": "center", "margin": "xs"}
+                ]
+            }
         }
         
         line_bot_api.reply_message(
@@ -199,13 +231,22 @@ def handle_message(event):
             }
             supabase.table("boss_records").upsert(data_to_save, on_conflict="chat_id,boss_name").execute()
             
+            k_date = kill_time.strftime("%m/%d")
+            k_week = WEEK_DAYS[kill_time.weekday()]
+            n_date = next_spawn_time.strftime("%m/%d")
+            n_week = WEEK_DAYS[next_spawn_time.weekday()]
+            
             reply_text = (
-                f"擊殺：{boss_name}\n"
-                f"擊殺時間：{kill_time.strftime('%m/%d %H:%M')}\n"
-                f"下一次：{next_spawn_time.strftime('%m/%d %H:%M')}\n"
-                f"間隔：{interval} 分鐘"
+                f"📝 【戰報：BOSS擊殺成功】\n"
+                f"──────────────────\n"
+                f"👹 追蹤對象：〖 {boss_name} 〗\n"
+                f"⚔️ 擊殺時間：{k_date} ({k_week}) {kill_time.strftime('%H:%M')}\n"
+                f"⏱️ 重生間隔：{interval} 分鐘\n"
+                f"──────────────────\n"
+                f"🎯 預計下一次出沒時間：\n"
+                f"👉 【 {n_date} ({n_week}) {next_spawn_time.strftime('%H:%M')} 】"
             )
         else:
-            reply_text = f"找不到王怪：{boss_name}，請至後台新增。"
+            reply_text = f"❌ 追蹤失敗\n找不到BOSS「{boss_name}」的設定配置。\n💡 請點擊網頁後台手動新增該BOSS！"
             
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
