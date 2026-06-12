@@ -4,8 +4,9 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, FlexSendMessage
 from supabase import create_client, Client
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import math
+import pytz
 
 app = FastAPI(redirect_slashes=False)
 
@@ -21,6 +22,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 WEEK_DAYS = ["一", "二", "三", "四", "五", "六", "日"]
 BOSSES_PER_CARD = 10  # 每卡片顯示 10 隻 BOSS
+TZ_TAIWAN = pytz.timezone("Asia/Taipei")  # 台灣時區
 
 @app.get("/api")
 def read_root():
@@ -92,7 +94,7 @@ def build_boss_carousel(combined_list):
                 status_icon = "⚪"
                 time_display = "尚未回報"
             else:
-                now = datetime.now(next_time.tzinfo)
+                now = datetime.now(TZ_TAIWAN)
                 countdown = next_time - now
                 minutes_left = int(countdown.total_seconds() / 60)
                 
@@ -122,7 +124,7 @@ def build_boss_carousel(combined_list):
                 ]
             })
         
-        # 建立卡片
+        # 建立卡片（無 footer）
         bubble = {
             "type": "bubble",
             "size": "kilo",
@@ -132,17 +134,6 @@ def build_boss_carousel(combined_list):
                 "paddingAll": "0px",
                 "spacing": "none",
                 "contents": table_contents
-            },
-            "footer": {
-                "type": "box",
-                "layout": "vertical",
-                "paddingAll": "6px",
-                "backgroundColor": "#e9ecef",
-                "spacing": "xs",
-                "contents": [
-                    {"type": "text", "text": f"第 {card_idx + 1} / {total_cards} 頁", "size": "xs", "color": "#495057", "align": "center"},
-                    {"type": "text", "text": "💡 左右滑動查看更多 | K BOSS名稱 回報擊殺", "size": "xs", "color": "#6c757d", "align": "center"}
-                ]
             }
         }
         
@@ -214,6 +205,8 @@ def handle_message(event):
             if name in records_map:
                 rec = records_map[name]
                 next_time = datetime.fromisoformat(rec["next_spawn_time"].replace("Z", "+00:00"))
+                # 轉換為台灣時區
+                next_time = next_time.astimezone(TZ_TAIWAN)
                 # 用於排序的時間戳記
                 sort_timestamp = next_time.timestamp()
                 status = "tracked"
@@ -239,14 +232,39 @@ def handle_message(event):
         return
 
     # ────────────────────────────────────────────────────
-    # 情況 C：回報擊殺 K [BOSS名稱] (保持原有精美戰報回覆)
+    # 情況 C：回報擊殺 K [BOSS名稱] 或 K [BOSS名稱] HH:MM
     # ────────────────────────────────────────────────────
     if user_msg.startswith("K"):
-        boss_name = user_msg.replace("K", "").strip()
+        # 分離 K 和後面的內容
+        remaining = user_msg.replace("K", "").strip()
         
-        if not boss_name or boss_name == "LIST" or boss_name == "CLEAR" or boss_name.startswith("LIST"):
+        if not remaining or remaining == "LIST" or remaining == "CLEAR" or remaining.startswith("LIST"):
             return
-            
+        
+        # 嘗試解析時間格式 "BOSS名稱 HH:MM"
+        parts = remaining.split()
+        boss_name = ""
+        custom_time = None
+        
+        if len(parts) >= 2:
+            # 檢查最後一個部分是否是時間格式 HH:MM
+            potential_time = parts[-1]
+            if ":" in potential_time and len(potential_time) == 5:
+                try:
+                    hour, minute = potential_time.split(":")
+                    hour = int(hour)
+                    minute = int(minute)
+                    if 0 <= hour < 24 and 0 <= minute < 60:
+                        # 有效的時間格式
+                        custom_time = (hour, minute)
+                        boss_name = " ".join(parts[:-1])  # 其餘部分是 BOSS 名稱
+                except (ValueError, IndexError):
+                    boss_name = remaining
+            else:
+                boss_name = remaining
+        else:
+            boss_name = remaining
+        
         # 先撈取所有 BOSS 設定，用於正式名稱與別名比對
         configs_resp = supabase.table("boss_config").select("*").execute()
         configs = configs_resp.data or []
@@ -274,9 +292,18 @@ def handle_message(event):
             real_name = found_cfg.get("boss_name")
             interval = found_cfg.get("respawn_interval")
 
-            kill_time = datetime.now() + timedelta(hours=8)
+            # 確定擊殺時間
+            if custom_time:
+                # 使用自訂時間（當天 HH:MM）
+                now_tw = datetime.now(TZ_TAIWAN)
+                kill_time = now_tw.replace(hour=custom_time[0], minute=custom_time[1], second=0, microsecond=0)
+            else:
+                # 使用當前時間
+                kill_time = datetime.now(TZ_TAIWAN)
+            
             next_spawn_time = kill_time + timedelta(minutes=interval)
 
+            # 轉換為 ISO 格式保存到資料庫
             data_to_save = {
                 "chat_id": chat_id,
                 "boss_name": real_name,
