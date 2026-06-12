@@ -20,7 +20,7 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 WEEK_DAYS = ["一", "二", "三", "四", "五", "六", "日"]
-BOSSES_PER_CARD = 3  # 每卡片顯示 3 隻 BOSS
+BOSSES_PER_CARD = 10  # 每卡片顯示 10 隻 BOSS
 
 @app.get("/api")
 def read_root():
@@ -38,7 +38,7 @@ async def callback(request: Request):
 
 def build_boss_carousel(combined_list):
     """
-    生成 LINE Flex Carousel，每張卡片顯示 3 隻 BOSS
+    生成 LINE Flex Carousel，每張卡片顯示 10 隻 BOSS
     支援左右滑動切換
     """
     if not combined_list:
@@ -73,8 +73,8 @@ def build_boss_carousel(combined_list):
             "type": "box",
             "layout": "horizontal",
             "backgroundColor": "#1a1d20",
-            "paddingAll": "8px",
-            "spacing": "sm",
+            "paddingAll": "6px",
+            "spacing": "xs",
             "contents": [
                 {"type": "text", "text": "狀態", "color": "#ffffff", "size": "xs", "weight": "bold", "flex": 1, "align": "center"},
                 {"type": "text", "text": "BOSS", "color": "#ffffff", "size": "xs", "weight": "bold", "flex": 2, "align": "center"},
@@ -113,8 +113,8 @@ def build_boss_carousel(combined_list):
                 "type": "box",
                 "layout": "horizontal",
                 "backgroundColor": row_bg,
-                "paddingAll": "6px",
-                "spacing": "sm",
+                "paddingAll": "4px",
+                "spacing": "xs",
                 "contents": [
                     {"type": "text", "text": status_icon, "size": "sm", "flex": 1, "align": "center"},
                     {"type": "text", "text": boss_name, "size": "xs", "weight": "bold", "color": "#212529", "flex": 2, "align": "center"},
@@ -136,7 +136,7 @@ def build_boss_carousel(combined_list):
             "footer": {
                 "type": "box",
                 "layout": "vertical",
-                "paddingAll": "8px",
+                "paddingAll": "6px",
                 "backgroundColor": "#e9ecef",
                 "spacing": "xs",
                 "contents": [
