@@ -20,7 +20,7 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 WEEK_DAYS = ["一", "二", "三", "四", "五", "六", "日"]
-BOSSES_PER_PAGE = 4  # 每頁顯示 4 隻 BOSS
+BOSSES_PER_PAGE = 5  # 每頁顯示 5 隻 BOSS
 
 @app.get("/api")
 def read_root():
@@ -36,47 +36,39 @@ async def callback(request: Request):
         raise HTTPException(status_code=400, detail="Invalid signature")
     return "OK"
 
-def build_boss_list_page(combined_list, page_num, chat_id):
+def build_boss_carousel(combined_list, chat_id):
     """
-    根據頁碼生成 LINE Flex Message
-    page_num：頁碼 (從 0 開始)
+    生成 LINE Flex Carousel，每張卡片顯示 1 隻 BOSS
+    支援左右滑動切換
     """
-    total_bosses = len(combined_list)
-    total_pages = math.ceil(total_bosses / BOSSES_PER_PAGE) if total_bosses > 0 else 1
+    if not combined_list:
+        return FlexSendMessage(
+            alt_text="📊 BOSS追蹤",
+            contents={
+                "type": "bubble",
+                "body": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": [
+                        {"type": "text", "text": "📊 系統內目前沒有任何BOSS設定", "align": "center"}
+                    ]
+                }
+            }
+        )
     
-    # 確保頁碼在有效範圍內
-    page_num = max(0, min(page_num, total_pages - 1))
+    # 生成卡片列表
+    bubbles = []
     
-    # 計算該頁的 BOSS 列表
-    start_idx = page_num * BOSSES_PER_PAGE
-    end_idx = start_idx + BOSSES_PER_PAGE
-    page_bosses = combined_list[start_idx:end_idx]
-    
-    # 4. 開始繪製 LINE Flex 網格表格 Rows
-    table_rows = []
-    
-    # 表格標頭列 (Header Row)
-    table_rows.append({
-        "type": "box", "layout": "horizontal", "backgroundColor": "#1a1d20", "paddingTop": "8px", "paddingBottom": "8px",
-        "contents": [
-            {"type": "text", "text": "狀態", "color": "#ffffff", "size": "sm", "weight": "bold", "flex": 1, "align": "center"},
-            {"type": "text", "text": "BOSS名稱", "color": "#ffffff", "size": "sm", "weight": "bold", "flex": 2, "align": "center"},
-            {"type": "text", "text": "預計時間", "color": "#ffffff", "size": "xs", "weight": "bold", "flex": 3, "align": "center"},
-            {"type": "text", "text": "快速回報", "color": "#ffffff", "size": "sm", "weight": "bold", "flex": 1, "align": "center"}
-        ]
-    })
-    
-    # 動態渲染資料列
-    for idx, item in enumerate(page_bosses):
+    for item in combined_list:
         boss_name = item["boss_name"]
         next_time = item["next_time"]
         
-        row_bg = "#f8f9fa" if idx % 2 == 0 else "#ffffff" # 斑馬紋
-        
-        # 判斷時間與倒數
+        # 判斷狀態與時間
         if item["status"] == "unknown":
             status_icon = "⚪"
             time_display = "⚠️ 尚未回報"
+            countdown_text = "等待回報"
+            card_color = "#e9ecef"
         else:
             now = datetime.now(next_time.tzinfo)
             countdown = next_time - now
@@ -85,123 +77,134 @@ def build_boss_list_page(combined_list, page_num, chat_id):
             date_str = next_time.strftime("%m/%d")
             time_str = next_time.strftime("%H:%M")
             weekday_str = WEEK_DAYS[next_time.weekday()]
-            time_display = f"{date_str}({weekday_str})\n{time_str}"
+            time_display = f"{date_str}({weekday_str}) {time_str}"
             
             if minutes_left > 0:
-                status_icon = "🟢" # 重生中
+                status_icon = "🟢"
+                hours = minutes_left // 60
+                mins = minutes_left % 60
+                countdown_text = f"{hours}h {mins}m 後" if hours > 0 else f"{mins}m 後"
+                card_color = "#d4edda"  # 綠色背景
             else:
-                status_icon = "🔴" # 已超時
-
-        # 加入整合好的表格列資料
-        table_rows.append({
-            "type": "box", "layout": "horizontal", "backgroundColor": row_bg, "paddingTop": "10px", "paddingBottom": "10px", "alignItems": "center",
-            "contents": [
-                {"type": "text", "text": status_icon, "size": "sm", "flex": 1, "align": "center"},
-                {"type": "text", "text": boss_name, "size": "sm", "weight": "bold", "color": "#212529", "flex": 2, "align": "center"},
-                {
-                    "type": "text", "text": time_display, "size": "xs", "color": "#495057", "flex": 3, "align": "center", "wrap": True
-                },
-                # 👑 【UIUX 優化】每一列右側都加入一鍵回報的「擊殺按鈕」
-                {
-                    "type": "button",
-                    "style": "secondary",
-                    "color": "#dc3545",
-                    "height": "sm",
-                    "flex": 1,
-                    "action": {
-                        "type": "message",
-                        "label": "✓",
-                        "text": f"K {boss_name}" # 點擊後會由該使用者帳號在群組自動喊出「K BOSS名稱」
+                status_icon = "🔴"
+                over_minutes = -minutes_left
+                hours = over_minutes // 60
+                mins = over_minutes % 60
+                countdown_text = f"過 {hours}h {mins}m" if hours > 0 else f"過 {mins}m"
+                card_color = "#f8d7da"  # 紅色背景
+        
+        # 建立單張卡片
+        bubble = {
+            "type": "bubble",
+            "size": "mega",
+            "backgroundColor": card_color,
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "md",
+                "contents": [
+                    # 狀態圖示 + BOSS 名稱
+                    {
+                        "type": "box",
+                        "layout": "horizontal",
+                        "spacing": "md",
+                        "alignItems": "center",
+                        "contents": [
+                            {"type": "text", "text": status_icon, "size": "xl"},
+                            {
+                                "type": "text",
+                                "text": boss_name,
+                                "size": "lg",
+                                "weight": "bold",
+                                "color": "#212529",
+                                "flex": 5
+                            }
+                        ]
+                    },
+                    # 分隔線
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "height": "1px",
+                        "backgroundColor": "#dee2e6"
+                    },
+                    # 預計時間
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "spacing": "sm",
+                        "contents": [
+                            {
+                                "type": "text",
+                                "text": "預計時間",
+                                "size": "xs",
+                                "color": "#6c757d"
+                            },
+                            {
+                                "type": "text",
+                                "text": time_display,
+                                "size": "sm",
+                                "weight": "bold",
+                                "color": "#212529"
+                            }
+                        ]
+                    },
+                    # 倒數時間
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "spacing": "sm",
+                        "contents": [
+                            {
+                                "type": "text",
+                                "text": "倒數",
+                                "size": "xs",
+                                "color": "#6c757d"
+                            },
+                            {
+                                "type": "text",
+                                "text": countdown_text,
+                                "size": "sm",
+                                "weight": "bold",
+                                "color": "#495057"
+                            }
+                        ]
                     }
-                }
-            ]
-        })
-    
-    # 構建分頁導航按鈕區塊
-    nav_buttons = []
-    
-    # 上一頁按鈕
-    if page_num > 0:
-        nav_buttons.append({
-            "type": "button",
-            "style": "secondary",
-            "color": "#0d6efd",
-            "height": "sm",
-            "flex": 1,
-            "action": {
-                "type": "message",
-                "label": "⬅ 前頁",
-                "text": f"K LIST PAGE {page_num - 1}"
+                ]
+            },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "sm",
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "color": "#dc3545",
+                        "height": "sm",
+                        "action": {
+                            "type": "message",
+                            "label": "✓ 擊殺",
+                            "text": f"K {boss_name}"
+                        }
+                    }
+                ]
             }
-        })
-    else:
-        nav_buttons.append({
-            "type": "box",
-            "layout": "vertical",
-            "flex": 1
-        })
-    
-    # 頁碼指示
-    nav_buttons.append({
-        "type": "text",
-        "text": f"第 {page_num + 1} / {total_pages} 頁",
-        "color": "#495057",
-        "size": "xs",
-        "align": "center",
-        "flex": 2
-    })
-    
-    # 下一頁按鈕
-    if page_num < total_pages - 1:
-        nav_buttons.append({
-            "type": "button",
-            "style": "secondary",
-            "color": "#0d6efd",
-            "height": "sm",
-            "flex": 1,
-            "action": {
-                "type": "message",
-                "label": "後頁 ➡",
-                "text": f"K LIST PAGE {page_num + 1}"
-            }
-        })
-    else:
-        nav_buttons.append({
-            "type": "box",
-            "layout": "vertical",
-            "flex": 1
-        })
-    
-    # 封裝 Flex Bubble 結構
-    flex_contents = {
-        "type": "bubble",
-        "size": "kilo",
-        "header": {
-            "type": "box", "layout": "vertical", "backgroundColor": "#0d6efd", "paddingTop": "12px", "paddingBottom": "12px",
-            "contents": [
-                {"type": "text", "text": "BOSS重生戰報", "color": "#ffffff", "weight": "bold", "size": "md", "align": "center"}
-            ]
-        },
-        "body": {
-            "type": "box", "layout": "vertical", "paddingAll": "0px", "spacing": "none",
-            "contents": table_rows
-        },
-        "footer": {
-            "type": "box", "layout": "vertical", "backgroundColor": "#e9ecef", "paddingAll": "10px",
-            "contents": [
-                {
-                    "type": "box",
-                    "layout": "horizontal",
-                    "spacing": "sm",
-                    "contents": nav_buttons
-                },
-                {"type": "text", "text": "💡 點擊✓按鈕或輸入「K BOSS名稱」可回報擊殺", "size": "xs", "color": "#495057", "align": "center", "margin": "md"},
-                {"type": "text", "text": "🧹 輸入「K CLEAR」可清空本群所有紀錄", "size": "xs", "color": "#6c757d", "align": "center", "margin": "xs"}
-            ]
         }
-    }
+        
+        bubbles.append(bubble)
     
-    return FlexSendMessage(alt_text="📊 網格BOSS追蹤時間看板", contents=flex_contents)
+    # 如果只有一張卡片，直接返回 Bubble；否則用 Carousel
+    if len(bubbles) == 1:
+        return FlexSendMessage(alt_text="📊 BOSS追蹤", contents=bubbles[0])
+    else:
+        return FlexSendMessage(
+            alt_text="📊 BOSS追蹤（左右滑動查看）",
+            contents={
+                "type": "carousel",
+                "contents": bubbles
+            }
+        )
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
@@ -235,9 +238,9 @@ def handle_message(event):
         return
 
     # ────────────────────────────────────────────────────
-    # 情況 B：查詢群組專屬清單 K LIST (分頁版本)
+    # 情況 B：查詢群組專屬清單 K LIST (卡片輪播版本)
     # ────────────────────────────────────────────────────
-    if user_msg.startswith("K LIST"):
+    if user_msg == "K LIST" or user_msg == "KLIST":
         # 1. 先撈出全域支援的所有BOSS Config，確保沒擊殺紀錄的王也能出現在清單上供使用者點擊
         config_resp = supabase.table("boss_config").select("*").order("boss_name", desc=False).execute()
         configs = config_resp.data
@@ -276,19 +279,8 @@ def handle_message(event):
         # 👑 【UIUX 優化】依據出沒時間由近到遠精準排序（最快重生的置頂）
         combined_list.sort(key=lambda x: x["sort_key"])
         
-        # 解析頁碼
-        page_num = 0
-        if user_msg != "K LIST" and user_msg != "KLIST":
-            # 嘗試提取頁碼 "K LIST PAGE 1"
-            parts = user_msg.split()
-            if len(parts) >= 3 and parts[1] == "LIST" and parts[2] == "PAGE":
-                try:
-                    page_num = int(parts[3]) if len(parts) > 3 else 0
-                except (ValueError, IndexError):
-                    page_num = 0
-        
-        # 生成該頁的 Flex Message
-        flex_msg = build_boss_list_page(combined_list, page_num, chat_id)
+        # 生成卡片輪播
+        flex_msg = build_boss_carousel(combined_list, chat_id)
         line_bot_api.reply_message(event.reply_token, flex_msg)
         return
 
