@@ -20,7 +20,7 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 WEEK_DAYS = ["一", "二", "三", "四", "五", "六", "日"]
-BOSSES_PER_PAGE = 5  # 每頁顯示 5 隻 BOSS
+BOSSES_PER_CARD = 3  # 每卡片顯示 3 隻 BOSS
 
 @app.get("/api")
 def read_root():
@@ -36,9 +36,9 @@ async def callback(request: Request):
         raise HTTPException(status_code=400, detail="Invalid signature")
     return "OK"
 
-def build_boss_carousel(combined_list, chat_id):
+def build_boss_carousel(combined_list):
     """
-    生成 LINE Flex Carousel，每張卡片顯示 1 隻 BOSS
+    生成 LINE Flex Carousel，每張卡片顯示 3 隻 BOSS
     支援左右滑動切換
     """
     if not combined_list:
@@ -56,138 +56,92 @@ def build_boss_carousel(combined_list, chat_id):
             }
         )
     
-    # 生成卡片列表
+    # 計算總頁數
+    total_cards = math.ceil(len(combined_list) / BOSSES_PER_CARD)
     bubbles = []
     
-    for item in combined_list:
-        boss_name = item["boss_name"]
-        next_time = item["next_time"]
+    for card_idx in range(total_cards):
+        start_idx = card_idx * BOSSES_PER_CARD
+        end_idx = start_idx + BOSSES_PER_CARD
+        card_bosses = combined_list[start_idx:end_idx]
         
-        # 判斷狀態與時間
-        if item["status"] == "unknown":
-            status_icon = "⚪"
-            time_display = "⚠️ 尚未回報"
-            countdown_text = "等待回報"
-            card_color = "#e9ecef"
-        else:
-            now = datetime.now(next_time.tzinfo)
-            countdown = next_time - now
-            minutes_left = int(countdown.total_seconds() / 60)
+        # 構建該卡片的表格列
+        table_contents = []
+        
+        # 標題列
+        table_contents.append({
+            "type": "box",
+            "layout": "horizontal",
+            "backgroundColor": "#1a1d20",
+            "paddingAll": "8px",
+            "spacing": "sm",
+            "contents": [
+                {"type": "text", "text": "狀態", "color": "#ffffff", "size": "xs", "weight": "bold", "flex": 1, "align": "center"},
+                {"type": "text", "text": "BOSS", "color": "#ffffff", "size": "xs", "weight": "bold", "flex": 2, "align": "center"},
+                {"type": "text", "text": "預計時間", "color": "#ffffff", "size": "xs", "weight": "bold", "flex": 3, "align": "center"}
+            ]
+        })
+        
+        # 數據列
+        for row_idx, item in enumerate(card_bosses):
+            boss_name = item["boss_name"]
+            next_time = item["next_time"]
             
-            date_str = next_time.strftime("%m/%d")
-            time_str = next_time.strftime("%H:%M")
-            weekday_str = WEEK_DAYS[next_time.weekday()]
-            time_display = f"{date_str}({weekday_str}) {time_str}"
-            
-            if minutes_left > 0:
-                status_icon = "🟢"
-                hours = minutes_left // 60
-                mins = minutes_left % 60
-                countdown_text = f"{hours}h {mins}m 後" if hours > 0 else f"{mins}m 後"
-                card_color = "#d4edda"  # 綠色背景
+            # 判斷狀態與時間
+            if item["status"] == "unknown":
+                status_icon = "⚪"
+                time_display = "尚未回報"
             else:
-                status_icon = "🔴"
-                over_minutes = -minutes_left
-                hours = over_minutes // 60
-                mins = over_minutes % 60
-                countdown_text = f"過 {hours}h {mins}m" if hours > 0 else f"過 {mins}m"
-                card_color = "#f8d7da"  # 紅色背景
+                now = datetime.now(next_time.tzinfo)
+                countdown = next_time - now
+                minutes_left = int(countdown.total_seconds() / 60)
+                
+                date_str = next_time.strftime("%m/%d")
+                time_str = next_time.strftime("%H:%M")
+                weekday_str = WEEK_DAYS[next_time.weekday()]
+                
+                if minutes_left > 0:
+                    status_icon = "🟢"
+                    time_display = f"{date_str}({weekday_str}) {time_str}"
+                else:
+                    status_icon = "🔴"
+                    time_display = f"{date_str}({weekday_str}) {time_str}"
+            
+            row_bg = "#f8f9fa" if row_idx % 2 == 0 else "#ffffff"
+            
+            table_contents.append({
+                "type": "box",
+                "layout": "horizontal",
+                "backgroundColor": row_bg,
+                "paddingAll": "6px",
+                "spacing": "sm",
+                "contents": [
+                    {"type": "text", "text": status_icon, "size": "sm", "flex": 1, "align": "center"},
+                    {"type": "text", "text": boss_name, "size": "xs", "weight": "bold", "color": "#212529", "flex": 2, "align": "center"},
+                    {"type": "text", "text": time_display, "size": "xs", "color": "#495057", "flex": 3, "align": "center", "wrap": True}
+                ]
+            })
         
-        # 建立單張卡片
+        # 建立卡片
         bubble = {
             "type": "bubble",
-            "size": "mega",
-            "backgroundColor": card_color,
+            "size": "kilo",
             "body": {
                 "type": "box",
                 "layout": "vertical",
-                "spacing": "md",
-                "contents": [
-                    # 狀態圖示 + BOSS 名稱
-                    {
-                        "type": "box",
-                        "layout": "horizontal",
-                        "spacing": "md",
-                        "alignItems": "center",
-                        "contents": [
-                            {"type": "text", "text": status_icon, "size": "xl"},
-                            {
-                                "type": "text",
-                                "text": boss_name,
-                                "size": "lg",
-                                "weight": "bold",
-                                "color": "#212529",
-                                "flex": 5
-                            }
-                        ]
-                    },
-                    # 分隔線
-                    {
-                        "type": "box",
-                        "layout": "vertical",
-                        "height": "1px",
-                        "backgroundColor": "#dee2e6"
-                    },
-                    # 預計時間
-                    {
-                        "type": "box",
-                        "layout": "vertical",
-                        "spacing": "sm",
-                        "contents": [
-                            {
-                                "type": "text",
-                                "text": "預計時間",
-                                "size": "xs",
-                                "color": "#6c757d"
-                            },
-                            {
-                                "type": "text",
-                                "text": time_display,
-                                "size": "sm",
-                                "weight": "bold",
-                                "color": "#212529"
-                            }
-                        ]
-                    },
-                    # 倒數時間
-                    {
-                        "type": "box",
-                        "layout": "vertical",
-                        "spacing": "sm",
-                        "contents": [
-                            {
-                                "type": "text",
-                                "text": "倒數",
-                                "size": "xs",
-                                "color": "#6c757d"
-                            },
-                            {
-                                "type": "text",
-                                "text": countdown_text,
-                                "size": "sm",
-                                "weight": "bold",
-                                "color": "#495057"
-                            }
-                        ]
-                    }
-                ]
+                "paddingAll": "0px",
+                "spacing": "none",
+                "contents": table_contents
             },
             "footer": {
                 "type": "box",
                 "layout": "vertical",
-                "spacing": "sm",
+                "paddingAll": "8px",
+                "backgroundColor": "#e9ecef",
+                "spacing": "xs",
                 "contents": [
-                    {
-                        "type": "button",
-                        "style": "primary",
-                        "color": "#dc3545",
-                        "height": "sm",
-                        "action": {
-                            "type": "message",
-                            "label": "✓ 擊殺",
-                            "text": f"K {boss_name}"
-                        }
-                    }
+                    {"type": "text", "text": f"第 {card_idx + 1} / {total_cards} 頁", "size": "xs", "color": "#495057", "align": "center"},
+                    {"type": "text", "text": "💡 左右滑動查看更多 | K BOSS名稱 回報擊殺", "size": "xs", "color": "#6c757d", "align": "center"}
                 ]
             }
         }
@@ -238,7 +192,7 @@ def handle_message(event):
         return
 
     # ────────────────────────────────────────────────────
-    # 情況 B：查詢群組專屬清單 K LIST (卡片輪播版本)
+    # 情況 B：查詢群組專屬清單 K LIST (分頁卡片輪播版本)
     # ────────────────────────────────────────────────────
     if user_msg == "K LIST" or user_msg == "KLIST":
         # 1. 先撈出全域支援的所有BOSS Config，確保沒擊殺紀錄的王也能出現在清單上供使用者點擊
@@ -280,7 +234,7 @@ def handle_message(event):
         combined_list.sort(key=lambda x: x["sort_key"])
         
         # 生成卡片輪播
-        flex_msg = build_boss_carousel(combined_list, chat_id)
+        flex_msg = build_boss_carousel(combined_list)
         line_bot_api.reply_message(event.reply_token, flex_msg)
         return
 
