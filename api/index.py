@@ -93,7 +93,7 @@ def build_boss_carousel(combined_list):
                 minutes_left = int(countdown.total_seconds() / 60)
                 
                 date_str = next_time.strftime("%m/%d")
-                time_str = next_time.strftime("%H:%M")
+                time_str = next_time.strftime("%H:%M:%S")
                 weekday_str = WEEK_DAYS[next_time.weekday()]
                 
                 if minutes_left > 0:
@@ -216,7 +216,7 @@ def handle_message(event):
             return
 
         # ════════════════════════════════════════
-        # 情況 C：K [BOSS名稱] 或 K [BOSS名稱] HH:MM
+        # 情況 C：K [BOSS名稱] 或 K [BOSS名稱] HH:MM:SS
         # ════════════════════════════════════════
         if user_msg.startswith("K"):
             remaining = user_msg.replace("K", "").strip()
@@ -228,17 +228,19 @@ def handle_message(event):
             boss_name = remaining
             custom_time = None
             
-            # 嘗試從最後一個詞提取時間
+            # 嘗試從最後一個詞提取時間 (HH:MM:SS)
             parts = remaining.split()
             if len(parts) >= 2:
                 last_part = parts[-1]
-                if ":" in last_part and len(last_part) == 5:
+                if ":" in last_part and (len(last_part) == 5 or len(last_part) == 8):
                     try:
-                        hour, minute = last_part.split(":")
-                        hour = int(hour)
-                        minute = int(minute)
-                        if 0 <= hour < 24 and 0 <= minute < 60:
-                            custom_time = (hour, minute)
+                        time_parts = last_part.split(":")
+                        hour = int(time_parts[0])
+                        minute = int(time_parts[1])
+                        second = int(time_parts[2]) if len(time_parts) == 3 else 0
+                        
+                        if 0 <= hour < 24 and 0 <= minute < 60 and 0 <= second < 60:
+                            custom_time = (hour, minute, second)
                             boss_name = " ".join(parts[:-1])
                     except (ValueError, IndexError):
                         pass
@@ -272,9 +274,9 @@ def handle_message(event):
                 # 決定擊殺時間
                 if custom_time:
                     now_tw = datetime.now(TZ_TAIWAN)
-                    kill_time = now_tw.replace(hour=custom_time[0], minute=custom_time[1], second=0, microsecond=0)
+                    kill_time = now_tw.replace(hour=custom_time[0], minute=custom_time[1], second=custom_time[2], microsecond=0)
                 else:
-                    kill_time = datetime.now(TZ_TAIWAN)
+                    kill_time = datetime.now(TZ_TAIWAN).replace(microsecond=0)
                 
                 next_spawn_time = kill_time + timedelta(minutes=interval)
 
@@ -289,8 +291,8 @@ def handle_message(event):
 
                 reply_text = (
                     f"擊殺：{real_name}\n"
-                    f"擊殺時間：{kill_time.strftime('%m/%d %H:%M')}\n"
-                    f"下一次：{next_spawn_time.strftime('%m/%d %H:%M')}\n"
+                    f"擊殺時間：{kill_time.strftime('%m/%d %H:%M:%S')}\n"
+                    f"下一次：{next_spawn_time.strftime('%m/%d %H:%M:%S')}\n"
                     f"間隔：{interval} 分鐘"
                 )
             else:
