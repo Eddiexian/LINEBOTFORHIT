@@ -106,7 +106,6 @@ def build_boss_carousel(combined_list):
 
         table_contents = []
 
-        # 標題列
         table_contents.append({
             "type": "box",
             "layout": "horizontal",
@@ -120,7 +119,6 @@ def build_boss_carousel(combined_list):
             ]
         })
 
-        # 數據列
         for row_idx, item in enumerate(card_bosses):
             boss_name = item["boss_name"]
             next_time = item["next_time"]
@@ -137,11 +135,7 @@ def build_boss_carousel(combined_list):
                 time_str = next_time.strftime("%H:%M:%S")
                 weekday_str = WEEK_DAYS[next_time.weekday()]
 
-                if minutes_left > 0:
-                    status_icon = "🟢"
-                else:
-                    status_icon = "🔴"
-
+                status_icon = "🟢" if minutes_left > 0 else "🔴"
                 time_display = f"{date_str}({weekday_str}) {time_str}"
 
             row_bg = "#f8f9fa" if row_idx % 2 == 0 else "#ffffff"
@@ -188,7 +182,6 @@ def build_boss_carousel(combined_list):
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     try:
-        # 1. 取得群組或個人 ID
         source_type = event.source.type
         if source_type == "group":
             chat_id = event.source.group_id
@@ -199,74 +192,108 @@ def handle_message(event):
 
         user_id = event.source.user_id
 
-        # 2. 安全清洗文字
         raw_msg = event.message.text.strip().upper()
 
-        # 精準尋找最後一個 K 字母
         user_msg = raw_msg
         if "K" in raw_msg:
             k_index = raw_msg.rfind("K")
             user_msg = raw_msg[k_index:].strip()
 
-        # 情況 A：K SET [BOSS名稱] [分鐘]
-        # 範例：K SET 巴風特 360
+        # 情況 A：K SET [BOSS名稱|ALL] [分鐘|HALF]
         if user_msg.startswith("K SET ") or user_msg.startswith("KSET "):
-            if user_msg.startswith("K SET "):
-                setting_text = user_msg[len("K SET "):].strip()
-            else:
-                setting_text = user_msg[len("KSET "):].strip()
+            setting_text = (
+                user_msg[len("K SET "):].strip()
+                if user_msg.startswith("K SET ")
+                else user_msg[len("KSET "):].strip()
+            )
 
             setting_parts = setting_text.rsplit(" ", 1)
             if len(setting_parts) != 2 or not setting_parts[0].strip():
                 line_bot_api.reply_message(
                     event.reply_token,
-                    TextSendMessage(text="格式錯誤，請使用：K SET 王怪名稱 分鐘\n例如：K SET 巴風特 360")
+                    TextSendMessage(text="格式錯誤，請使用：\nK SET 王怪名稱 分鐘或 HALF\nK SET ALL 分鐘或 HALF\n例如：K SET ALL HALF")
                 )
                 return
 
             setting_boss_name = setting_parts[0].strip()
-            try:
-                custom_interval = int(setting_parts[1].strip())
-                if custom_interval <= 0:
-                    raise ValueError
-            except ValueError:
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    TextSendMessage(text="重生間隔必須是大於 0 的整數分鐘。")
-                )
-                return
+            interval_value = setting_parts[1].strip()
 
             configs_resp = supabase.table("boss_config").select("*").execute()
-            found_setting_cfg = find_boss_config(configs_resp.data or [], setting_boss_name)
+            configs = configs_resp.data or []
 
-            if not found_setting_cfg:
+            if not configs:
                 line_bot_api.reply_message(
                     event.reply_token,
-                    TextSendMessage(text=f"找不到王怪：{setting_boss_name}\n請先至後台新增。")
+                    TextSendMessage(text="系統內目前沒有任何BOSS設定。")
                 )
                 return
 
-            real_name = found_setting_cfg.get("boss_name")
-            supabase.table("group_boss_settings").upsert(
-                {
+            if setting_boss_name == "ALL":
+                target_configs = configs
+            else:
+                found_setting_cfg = find_boss_config(configs, setting_boss_name)
+                if not found_setting_cfg:
+                    line_bot_api.reply_message(
+                        event.reply_token,
+                        TextSendMessage(text=f"找不到王怪：{setting_boss_name}\n請先至後台新增。")
+                    )
+                    return
+                target_configs = [found_setting_cfg]
+
+            settings_to_save = []
+            for cfg in target_configs:
+                real_name = cfg.get("boss_name")
+                global_interval = int(cfg.get("respawn_interval"))
+
+                if interval_value == "HALF":
+                    custom_interval = max(1, global_interval // 2)
+                else:
+                    try:
+                        custom_interval = int(interval_value)
+                        if custom_interval <= 0:
+                            raise ValueError
+                    except ValueError:
+                        line_bot_api.reply_message(
+                            event.reply_token,
+                            TextSendMessage(text="間隔請輸入大於 0 的整數分鐘，或輸入 HALF。")
+                        )
+                        return
+
+                settings_to_save.append({
                     "chat_id": chat_id,
                     "boss_name": real_name,
                     "respawn_interval": custom_interval,
                     "updated_by": user_id,
                     "updated_at": datetime.now(TZ_TAIWAN).isoformat(),
-                },
+                })
+
+            supabase.table("group_boss_settings").upsert(
+                settings_to_save,
                 on_conflict="chat_id,boss_name"
             ).execute()
 
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(
-                    text=f"✅ 已設定本群組的重生間隔\n王怪：{real_name}\n間隔：{custom_interval} 分鐘"
+            if setting_boss_name == "ALL":
+                reply_text = (
+                    f"✅ 已設定本群組全部 {len(settings_to_save)} 隻BOSS的重生間隔\n"
+                    + (
+                        "模式：全域間隔的一半"
+                        if interval_value == "HALF"
+                        else f"模式：統一 {interval_value} 分鐘"
+                    )
                 )
-            )
+            else:
+                saved = settings_to_save[0]
+                reply_text = (
+                    f"✅ 已設定本群組的重生間隔\n"
+                    f"王怪：{saved['boss_name']}\n"
+                    f"間隔：{saved['respawn_interval']} 分鐘"
+                    + ("（全域間隔的一半）" if interval_value == "HALF" else "")
+                )
+
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
             return
 
-        # 情況 B：K CLEAR - 清空本群組的擊殺紀錄
+        # 情況 B：K CLEAR
         if user_msg == "K CLEAR" or user_msg == "KCLEAR":
             supabase.table("boss_records").delete().eq("chat_id", chat_id).execute()
             line_bot_api.reply_message(
@@ -275,7 +302,7 @@ def handle_message(event):
             )
             return
 
-        # 情況 C：K LIST - 查詢清單
+        # 情況 C：K LIST
         if user_msg == "K LIST" or user_msg == "KLIST":
             config_resp = supabase.table("boss_config").select("*").order("boss_name", desc=False).execute()
             configs = config_resp.data or []
@@ -323,7 +350,6 @@ def handle_message(event):
             if not remaining or remaining == "LIST" or remaining == "CLEAR" or remaining.startswith("LIST"):
                 return
 
-            # 解析時間格式
             boss_name = remaining
             custom_time = None
             parts = remaining.split()
@@ -350,7 +376,6 @@ def handle_message(event):
                 default_interval = found_cfg.get("respawn_interval")
                 interval = get_group_respawn_interval(chat_id, real_name, default_interval)
 
-                # 決定擊殺時間
                 if custom_time:
                     now_tw = datetime.now(TZ_TAIWAN)
                     kill_time = now_tw.replace(
