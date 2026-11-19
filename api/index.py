@@ -24,9 +24,49 @@ WEEK_DAYS = ["一", "二", "三", "四", "五", "六", "日"]
 BOSSES_PER_CARD = 10
 TZ_TAIWAN = pytz.timezone("Asia/Taipei")
 
+
+def get_group_respawn_interval(chat_id, boss_name, default_interval):
+    """取得群組專屬重生間隔；沒有設定時回退至全域預設值。"""
+    response = (
+        supabase.table("group_boss_settings")
+        .select("respawn_interval")
+        .eq("chat_id", chat_id)
+        .eq("boss_name", boss_name)
+        .limit(1)
+        .execute()
+    )
+
+    if response.data:
+        return int(response.data[0]["respawn_interval"])
+
+    return int(default_interval)
+
+
+def find_boss_config(configs, boss_name):
+    """依正式名稱或別名尋找 BOSS 設定。boss_name 預期為大寫字串。"""
+    for cfg in configs:
+        official = cfg.get("boss_name")
+        if official and official.upper() == boss_name:
+            return cfg
+
+        aliases = cfg.get("aliases") or cfg.get("alias")
+        if isinstance(aliases, str):
+            alias_list = [a.strip().upper() for a in aliases.split(",") if a.strip()]
+        elif isinstance(aliases, (list, tuple)):
+            alias_list = [str(a).strip().upper() for a in aliases]
+        else:
+            alias_list = []
+
+        if boss_name in alias_list:
+            return cfg
+
+    return None
+
+
 @app.get("/api")
 def read_root():
     return {"status": "Database API is running"}
+
 
 @app.post("/api")
 async def callback(request: Request):
@@ -37,6 +77,7 @@ async def callback(request: Request):
     except InvalidSignatureError:
         raise HTTPException(status_code=400, detail="Invalid signature")
     return "OK"
+
 
 def build_boss_carousel(combined_list):
     """生成 LINE Flex Carousel"""
@@ -54,17 +95,17 @@ def build_boss_carousel(combined_list):
                 }
             }
         )
-    
+
     total_cards = math.ceil(len(combined_list) / BOSSES_PER_CARD)
     bubbles = []
-    
+
     for card_idx in range(total_cards):
         start_idx = card_idx * BOSSES_PER_CARD
         end_idx = start_idx + BOSSES_PER_CARD
         card_bosses = combined_list[start_idx:end_idx]
-        
+
         table_contents = []
-        
+
         # 標題列
         table_contents.append({
             "type": "box",
@@ -78,12 +119,12 @@ def build_boss_carousel(combined_list):
                 {"type": "text", "text": "預計時間", "color": "#ffffff", "size": "xs", "weight": "bold", "flex": 3, "align": "center"}
             ]
         })
-        
+
         # 數據列
         for row_idx, item in enumerate(card_bosses):
             boss_name = item["boss_name"]
             next_time = item["next_time"]
-            
+
             if item["status"] == "unknown":
                 status_icon = "⚪"
                 time_display = "尚未回報"
@@ -91,20 +132,20 @@ def build_boss_carousel(combined_list):
                 now = datetime.now(TZ_TAIWAN)
                 countdown = next_time - now
                 minutes_left = int(countdown.total_seconds() / 60)
-                
+
                 date_str = next_time.strftime("%m/%d")
                 time_str = next_time.strftime("%H:%M:%S")
                 weekday_str = WEEK_DAYS[next_time.weekday()]
-                
+
                 if minutes_left > 0:
                     status_icon = "🟢"
                 else:
                     status_icon = "🔴"
-                
+
                 time_display = f"{date_str}({weekday_str}) {time_str}"
-            
+
             row_bg = "#f8f9fa" if row_idx % 2 == 0 else "#ffffff"
-            
+
             table_contents.append({
                 "type": "box",
                 "layout": "horizontal",
@@ -117,7 +158,7 @@ def build_boss_carousel(combined_list):
                     {"type": "text", "text": time_display, "size": "xs", "color": "#495057", "flex": 3, "align": "center", "wrap": True}
                 ]
             })
-        
+
         bubble = {
             "type": "bubble",
             "size": "kilo",
@@ -129,9 +170,9 @@ def build_boss_carousel(combined_list):
                 "contents": table_contents
             }
         }
-        
+
         bubbles.append(bubble)
-    
+
     if len(bubbles) == 1:
         return FlexSendMessage(alt_text="📊 BOSS追蹤", contents=bubbles[0])
     else:
@@ -142,6 +183,7 @@ def build_boss_carousel(combined_list):
                 "contents": bubbles
             }
         )
+
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
@@ -154,40 +196,100 @@ def handle_message(event):
             chat_id = event.source.room_id
         else:
             chat_id = event.source.user_id
-            
-        user_id = event.source.user_id 
+
+        user_id = event.source.user_id
 
         # 2. 安全清洗文字
         raw_msg = event.message.text.strip().upper()
-        
+
         # 精準尋找最後一個 K 字母
         user_msg = raw_msg
         if "K" in raw_msg:
             k_index = raw_msg.rfind("K")
             user_msg = raw_msg[k_index:].strip()
 
-        # ════════════════════════════════════════
-        # 情況 A：K CLEAR - 清空紀錄
-        # ════════════════════════════════════════
-        if user_msg == "K CLEAR" or user_msg == "KCLEAR":
-            supabase.table("boss_records").delete().eq("chat_id", chat_id).execute()
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="🗑️ 已成功清空本群組的所有BOSS重生追蹤紀錄！"))
+        # 情況 A：K SET [BOSS名稱] [分鐘]
+        # 範例：K SET 巴風特 360
+        if user_msg.startswith("K SET ") or user_msg.startswith("KSET "):
+            if user_msg.startswith("K SET "):
+                setting_text = user_msg[len("K SET "):].strip()
+            else:
+                setting_text = user_msg[len("KSET "):].strip()
+
+            setting_parts = setting_text.rsplit(" ", 1)
+            if len(setting_parts) != 2 or not setting_parts[0].strip():
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="格式錯誤，請使用：K SET 王怪名稱 分鐘\n例如：K SET 巴風特 360")
+                )
+                return
+
+            setting_boss_name = setting_parts[0].strip()
+            try:
+                custom_interval = int(setting_parts[1].strip())
+                if custom_interval <= 0:
+                    raise ValueError
+            except ValueError:
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="重生間隔必須是大於 0 的整數分鐘。")
+                )
+                return
+
+            configs_resp = supabase.table("boss_config").select("*").execute()
+            found_setting_cfg = find_boss_config(configs_resp.data or [], setting_boss_name)
+
+            if not found_setting_cfg:
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text=f"找不到王怪：{setting_boss_name}\n請先至後台新增。")
+                )
+                return
+
+            real_name = found_setting_cfg.get("boss_name")
+            supabase.table("group_boss_settings").upsert(
+                {
+                    "chat_id": chat_id,
+                    "boss_name": real_name,
+                    "respawn_interval": custom_interval,
+                    "updated_by": user_id,
+                    "updated_at": datetime.now(TZ_TAIWAN).isoformat(),
+                },
+                on_conflict="chat_id,boss_name"
+            ).execute()
+
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(
+                    text=f"✅ 已設定本群組的重生間隔\n王怪：{real_name}\n間隔：{custom_interval} 分鐘"
+                )
+            )
             return
 
-        # ════════════════════════════════════════
-        # 情況 B：K LIST - 查詢清單
-        # ════════════════════════════════════════
+        # 情況 B：K CLEAR - 清空本群組的擊殺紀錄
+        if user_msg == "K CLEAR" or user_msg == "KCLEAR":
+            supabase.table("boss_records").delete().eq("chat_id", chat_id).execute()
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="🗑️ 已成功清空本群組的所有BOSS重生追蹤紀錄！")
+            )
+            return
+
+        # 情況 C：K LIST - 查詢清單
         if user_msg == "K LIST" or user_msg == "KLIST":
             config_resp = supabase.table("boss_config").select("*").order("boss_name", desc=False).execute()
-            configs = config_resp.data
-            
+            configs = config_resp.data or []
+
             if not configs:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📊 系統內目前沒有任何BOSS設定，請先至網頁後台新增。"))
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="📊 系統內目前沒有任何BOSS設定，請先至網頁後台新增。")
+                )
                 return
 
             records_resp = supabase.table("boss_records").select("*").eq("chat_id", chat_id).execute()
-            records_map = {rec["boss_name"]: rec for rec in records_resp.data}
-            
+            records_map = {rec["boss_name"]: rec for rec in (records_resp.data or [])}
+
             combined_list = []
             for cfg in configs:
                 name = cfg["boss_name"]
@@ -199,87 +301,68 @@ def handle_message(event):
                     status = "tracked"
                 else:
                     next_time = None
-                    sort_timestamp = float('inf')
+                    sort_timestamp = float("inf")
                     status = "unknown"
-                    
+
                 combined_list.append({
                     "boss_name": name,
                     "next_time": next_time,
                     "sort_key": sort_timestamp,
                     "status": status
                 })
-                
+
             combined_list.sort(key=lambda x: x["sort_key"])
-            
             flex_msg = build_boss_carousel(combined_list)
             line_bot_api.reply_message(event.reply_token, flex_msg)
             return
 
-        # ════════════════════════════════════════
-        # 情況 C：K [BOSS名稱] 或 K [BOSS名稱] HH:MM:SS
-        # ════════════════════════════════════════
+        # 情況 D：K [BOSS名稱] 或 K [BOSS名稱] HH:MM:SS
         if user_msg.startswith("K"):
-            remaining = user_msg.replace("K", "").strip()
-            
+            remaining = user_msg[1:].strip()
+
             if not remaining or remaining == "LIST" or remaining == "CLEAR" or remaining.startswith("LIST"):
                 return
-            
+
             # 解析時間格式
             boss_name = remaining
             custom_time = None
-            
-            # 嘗試從最後一個詞提取時間 (HH:MM:SS)
             parts = remaining.split()
             if len(parts) >= 2:
                 last_part = parts[-1]
-                if ":" in last_part and (len(last_part) == 5 or len(last_part) == 8):
+                if ":" in last_part and len(last_part) in (5, 8):
                     try:
                         time_parts = last_part.split(":")
                         hour = int(time_parts[0])
                         minute = int(time_parts[1])
                         second = int(time_parts[2]) if len(time_parts) == 3 else 0
-                        
+
                         if 0 <= hour < 24 and 0 <= minute < 60 and 0 <= second < 60:
                             custom_time = (hour, minute, second)
                             boss_name = " ".join(parts[:-1])
                     except (ValueError, IndexError):
                         pass
-            
-            # 查找 BOSS 設定
-            configs_resp = supabase.table("boss_config").select("*").execute()
-            configs = configs_resp.data or []
 
-            found_cfg = None
-            for cfg in configs:
-                official = cfg.get("boss_name")
-                if official and official.upper() == boss_name:
-                    found_cfg = cfg
-                    break
-                aliases = cfg.get("aliases") or cfg.get("alias")
-                if aliases:
-                    if isinstance(aliases, str):
-                        alias_list = [a.strip().upper() for a in aliases.split(",") if a.strip()]
-                    elif isinstance(aliases, (list, tuple)):
-                        alias_list = [str(a).strip().upper() for a in aliases]
-                    else:
-                        alias_list = []
-                    if boss_name in alias_list:
-                        found_cfg = cfg
-                        break
+            configs_resp = supabase.table("boss_config").select("*").execute()
+            found_cfg = find_boss_config(configs_resp.data or [], boss_name)
 
             if found_cfg:
                 real_name = found_cfg.get("boss_name")
-                interval = found_cfg.get("respawn_interval")
+                default_interval = found_cfg.get("respawn_interval")
+                interval = get_group_respawn_interval(chat_id, real_name, default_interval)
 
                 # 決定擊殺時間
                 if custom_time:
                     now_tw = datetime.now(TZ_TAIWAN)
-                    kill_time = now_tw.replace(hour=custom_time[0], minute=custom_time[1], second=custom_time[2], microsecond=0)
+                    kill_time = now_tw.replace(
+                        hour=custom_time[0],
+                        minute=custom_time[1],
+                        second=custom_time[2],
+                        microsecond=0
+                    )
                 else:
                     kill_time = datetime.now(TZ_TAIWAN).replace(microsecond=0)
-                
-                next_spawn_time = kill_time + timedelta(minutes=interval)
 
+                next_spawn_time = kill_time + timedelta(minutes=interval)
                 data_to_save = {
                     "chat_id": chat_id,
                     "boss_name": real_name,
@@ -287,7 +370,10 @@ def handle_message(event):
                     "next_spawn_time": next_spawn_time.isoformat(),
                     "updated_by": user_id,
                 }
-                supabase.table("boss_records").upsert(data_to_save, on_conflict="chat_id,boss_name").execute()
+                supabase.table("boss_records").upsert(
+                    data_to_save,
+                    on_conflict="chat_id,boss_name"
+                ).execute()
 
                 reply_text = (
                     f"擊殺：{real_name}\n"
