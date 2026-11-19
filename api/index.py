@@ -63,6 +63,29 @@ def find_boss_config(configs, boss_name):
     return None
 
 
+def split_reply_text(text, max_length=4500, max_messages=5):
+    """將長文字切成 LINE 可回覆的多則訊息。"""
+    chunks = []
+    current = ""
+
+    for line in text.splitlines():
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > max_length and current:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+
+    if current:
+        chunks.append(current)
+
+    if len(chunks) > max_messages:
+        chunks = chunks[:max_messages]
+        chunks[-1] = chunks[-1][:max_length - 30] + "\n…清單過長，僅顯示部分內容。"
+
+    return [TextSendMessage(text=chunk) for chunk in chunks]
+
+
 @app.get("/api")
 def read_root():
     return {"status": "Database API is running"}
@@ -191,7 +214,6 @@ def handle_message(event):
             chat_id = event.source.user_id
 
         user_id = event.source.user_id
-
         raw_msg = event.message.text.strip().upper()
 
         user_msg = raw_msg
@@ -199,7 +221,70 @@ def handle_message(event):
             k_index = raw_msg.rfind("K")
             user_msg = raw_msg[k_index:].strip()
 
-        # 情況 A：K SET [BOSS名稱|ALL] [分鐘|HALF]
+        # HELP / K HELP：顯示可用指令
+        if raw_msg == "HELP" or user_msg in ("K HELP", "KHELP"):
+            help_text = (
+                "📖 BOSS追蹤指令\n"
+                "• K 王怪名稱：回報剛擊殺\n"
+                "• K 王怪名稱 HH:MM 或 HH:MM:SS：指定擊殺時間\n"
+                "• K LIST：查看BOSS重生追蹤清單\n"
+                "• K CHECK BOSS RESPAWN：查看本群組每隻王的重生間隔\n"
+                "• K SET 王怪名稱 分鐘：設定單隻王的群組間隔\n"
+                "• K SET 王怪名稱 HALF：設定為該王全域間隔的一半\n"
+                "• K SET ALL 分鐘：全部王設定為相同間隔\n"
+                "• K SET ALL HALF：全部王依各自全域間隔減半\n"
+                "• K CLEAR：清除本群組的擊殺追蹤紀錄"
+            )
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=help_text))
+            return
+
+        # K CHECK BOSS RESPAWN：顯示本群組目前生效的所有王怪間隔
+        if user_msg in ("K CHECK BOSS RESPAWN", "KCHECK BOSS RESPAWN"):
+            configs_resp = (
+                supabase.table("boss_config")
+                .select("boss_name,respawn_interval")
+                .order("boss_name", desc=False)
+                .execute()
+            )
+            configs = configs_resp.data or []
+
+            if not configs:
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="目前沒有任何BOSS全域設定。")
+                )
+                return
+
+            group_settings_resp = (
+                supabase.table("group_boss_settings")
+                .select("boss_name,respawn_interval")
+                .eq("chat_id", chat_id)
+                .execute()
+            )
+            group_settings = {
+                row["boss_name"]: int(row["respawn_interval"])
+                for row in (group_settings_resp.data or [])
+            }
+
+            lines = ["📋 本群組目前生效的BOSS重生間隔："]
+            for cfg in configs:
+                boss_name = cfg["boss_name"]
+                global_interval = int(cfg["respawn_interval"])
+                if boss_name in group_settings:
+                    interval = group_settings[boss_name]
+                    source = "群組自訂"
+                else:
+                    interval = global_interval
+                    source = "全域預設"
+                lines.append(f"• {boss_name}：{interval} 分鐘（{source}）")
+
+            line_bot_api.reply_message(
+                event.reply_token,
+                split_reply_text("\n".join(lines))
+            )
+            return
+
+        # K SET [BOSS名稱|ALL] [分鐘|HALF]
         if user_msg.startswith("K SET ") or user_msg.startswith("KSET "):
             setting_text = (
                 user_msg[len("K SET "):].strip()
@@ -293,7 +378,7 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
             return
 
-        # 情況 B：K CLEAR
+        # K CLEAR
         if user_msg == "K CLEAR" or user_msg == "KCLEAR":
             supabase.table("boss_records").delete().eq("chat_id", chat_id).execute()
             line_bot_api.reply_message(
@@ -302,7 +387,7 @@ def handle_message(event):
             )
             return
 
-        # 情況 C：K LIST
+        # K LIST
         if user_msg == "K LIST" or user_msg == "KLIST":
             config_resp = supabase.table("boss_config").select("*").order("boss_name", desc=False).execute()
             configs = config_resp.data or []
@@ -343,7 +428,7 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, flex_msg)
             return
 
-        # 情況 D：K [BOSS名稱] 或 K [BOSS名稱] HH:MM:SS
+        # K [BOSS名稱] 或 K [BOSS名稱] HH:MM:SS
         if user_msg.startswith("K"):
             remaining = user_msg[1:].strip()
 
