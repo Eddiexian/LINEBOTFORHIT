@@ -128,7 +128,6 @@ def build_boss_carousel(combined_list):
         card_bosses = combined_list[start_idx:end_idx]
 
         table_contents = []
-
         table_contents.append({
             "type": "box",
             "layout": "horizontal",
@@ -153,16 +152,13 @@ def build_boss_carousel(combined_list):
                 now = datetime.now(TZ_TAIWAN)
                 countdown = next_time - now
                 minutes_left = int(countdown.total_seconds() / 60)
-
                 date_str = next_time.strftime("%m/%d")
                 time_str = next_time.strftime("%H:%M:%S")
                 weekday_str = WEEK_DAYS[next_time.weekday()]
-
                 status_icon = "🟢" if minutes_left > 0 else "🔴"
                 time_display = f"{date_str}({weekday_str}) {time_str}"
 
             row_bg = "#f8f9fa" if row_idx % 2 == 0 else "#ffffff"
-
             table_contents.append({
                 "type": "box",
                 "layout": "horizontal",
@@ -176,7 +172,7 @@ def build_boss_carousel(combined_list):
                 ]
             })
 
-        bubble = {
+        bubbles.append({
             "type": "bubble",
             "size": "kilo",
             "body": {
@@ -186,20 +182,15 @@ def build_boss_carousel(combined_list):
                 "spacing": "none",
                 "contents": table_contents
             }
-        }
-
-        bubbles.append(bubble)
+        })
 
     if len(bubbles) == 1:
         return FlexSendMessage(alt_text="📊 BOSS追蹤", contents=bubbles[0])
-    else:
-        return FlexSendMessage(
-            alt_text="📊 BOSS追蹤（左右滑動查看）",
-            contents={
-                "type": "carousel",
-                "contents": bubbles
-            }
-        )
+
+    return FlexSendMessage(
+        alt_text="📊 BOSS追蹤（左右滑動查看）",
+        contents={"type": "carousel", "contents": bubbles}
+    )
 
 
 @handler.add(MessageEvent, message=TextMessage)
@@ -216,6 +207,8 @@ def handle_message(event):
         user_id = event.source.user_id
         raw_msg = event.message.text.strip().upper()
 
+        # 保留舊式 K 指令的解析方式；SET / CHECK 新指令直接依 raw_msg 判斷，
+        # 避免王怪名稱中包含 K 時被錯誤截斷。
         user_msg = raw_msg
         if "K" in raw_msg:
             k_index = raw_msg.rfind("K")
@@ -228,18 +221,22 @@ def handle_message(event):
                 "• K 王怪名稱：回報剛擊殺\n"
                 "• K 王怪名稱 HH:MM 或 HH:MM:SS：指定擊殺時間\n"
                 "• K LIST：查看BOSS重生追蹤清單\n"
-                "• K CHECK BOSS RESPAWN：查看本群組每隻王的重生間隔\n"
-                "• K SET 王怪名稱 分鐘：設定單隻王的群組間隔\n"
-                "• K SET 王怪名稱 HALF：設定為該王全域間隔的一半\n"
-                "• K SET ALL 分鐘：全部王設定為相同間隔\n"
-                "• K SET ALL HALF：全部王依各自全域間隔減半\n"
+                "• CHECK BOSS RESPAWN：查看本群組每隻王的重生間隔\n"
+                "• SET 王怪名稱 分鐘：設定單隻王的群組間隔\n"
+                "• SET 王怪名稱 HALF：設定為該王全域間隔的一半\n"
+                "• SET ALL 分鐘：全部王設定為相同間隔\n"
+                "• SET ALL HALF：全部王依各自全域間隔減半\n"
                 "• K CLEAR：清除本群組的擊殺追蹤紀錄"
             )
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=help_text))
             return
 
-        # K CHECK BOSS RESPAWN：顯示本群組目前生效的所有王怪間隔
-        if user_msg in ("K CHECK BOSS RESPAWN", "KCHECK BOSS RESPAWN"):
+        # CHECK BOSS RESPAWN：支援新格式及舊式 K 前綴
+        if raw_msg in (
+            "CHECK BOSS RESPAWN",
+            "K CHECK BOSS RESPAWN",
+            "KCHECK BOSS RESPAWN",
+        ):
             configs_resp = (
                 supabase.table("boss_config")
                 .select("boss_name,respawn_interval")
@@ -284,19 +281,22 @@ def handle_message(event):
             )
             return
 
-        # K SET [BOSS名稱|ALL] [分鐘|HALF]
-        if user_msg.startswith("K SET ") or user_msg.startswith("KSET "):
-            setting_text = (
-                user_msg[len("K SET "):].strip()
-                if user_msg.startswith("K SET ")
-                else user_msg[len("KSET "):].strip()
-            )
+        # SET [BOSS名稱|ALL] [分鐘|HALF]；同時相容舊式 K SET / KSET
+        if raw_msg.startswith("SET "):
+            setting_text = raw_msg[len("SET "):].strip()
+        elif raw_msg.startswith("K SET "):
+            setting_text = raw_msg[len("K SET "):].strip()
+        elif raw_msg.startswith("KSET "):
+            setting_text = raw_msg[len("KSET "):].strip()
+        else:
+            setting_text = None
 
+        if setting_text is not None:
             setting_parts = setting_text.rsplit(" ", 1)
             if len(setting_parts) != 2 or not setting_parts[0].strip():
                 line_bot_api.reply_message(
                     event.reply_token,
-                    TextSendMessage(text="格式錯誤，請使用：\nK SET 王怪名稱 分鐘或 HALF\nK SET ALL 分鐘或 HALF\n例如：K SET ALL HALF")
+                    TextSendMessage(text="格式錯誤，請使用：\nSET 王怪名稱 分鐘或 HALF\nSET ALL 分鐘或 HALF\n例如：SET ALL HALF")
                 )
                 return
 
@@ -379,7 +379,7 @@ def handle_message(event):
             return
 
         # K CLEAR
-        if user_msg == "K CLEAR" or user_msg == "KCLEAR":
+        if user_msg in ("K CLEAR", "KCLEAR"):
             supabase.table("boss_records").delete().eq("chat_id", chat_id).execute()
             line_bot_api.reply_message(
                 event.reply_token,
@@ -388,7 +388,7 @@ def handle_message(event):
             return
 
         # K LIST
-        if user_msg == "K LIST" or user_msg == "KLIST":
+        if user_msg in ("K LIST", "KLIST"):
             config_resp = supabase.table("boss_config").select("*").order("boss_name", desc=False).execute()
             configs = config_resp.data or []
 
@@ -424,15 +424,13 @@ def handle_message(event):
                 })
 
             combined_list.sort(key=lambda x: x["sort_key"])
-            flex_msg = build_boss_carousel(combined_list)
-            line_bot_api.reply_message(event.reply_token, flex_msg)
+            line_bot_api.reply_message(event.reply_token, build_boss_carousel(combined_list))
             return
 
         # K [BOSS名稱] 或 K [BOSS名稱] HH:MM:SS
         if user_msg.startswith("K"):
             remaining = user_msg[1:].strip()
-
-            if not remaining or remaining == "LIST" or remaining == "CLEAR" or remaining.startswith("LIST"):
+            if not remaining or remaining in ("LIST", "CLEAR") or remaining.startswith("LIST"):
                 return
 
             boss_name = remaining
