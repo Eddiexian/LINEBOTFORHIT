@@ -207,8 +207,7 @@ def handle_message(event):
         user_id = event.source.user_id
         raw_msg = event.message.text.strip().upper()
 
-        # 保留舊式 K 指令的解析方式；SET / CHECK 新指令直接依 raw_msg 判斷，
-        # 避免王怪名稱中包含 K 時被錯誤截斷。
+        # K 開頭的回報指令保留舊式解析；SET / CHECK 新指令直接依完整訊息判斷。
         user_msg = raw_msg
         if "K" in raw_msg:
             k_index = raw_msg.rfind("K")
@@ -226,12 +225,13 @@ def handle_message(event):
                 "• SET 王怪名稱 HALF：設定為該王全域間隔的一半\n"
                 "• SET ALL 分鐘：全部王設定為相同間隔\n"
                 "• SET ALL HALF：全部王依各自全域間隔減半\n"
+                "• SET ALL DEFAULT：全部恢復使用全域間隔\n"
                 "• K CLEAR：清除本群組的擊殺追蹤紀錄"
             )
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=help_text))
             return
 
-        # CHECK BOSS RESPAWN：支援新格式及舊式 K 前綴
+        # CHECK BOSS RESPAWN：查看本群組每隻王目前生效的間隔
         if raw_msg in (
             "CHECK BOSS RESPAWN",
             "K CHECK BOSS RESPAWN",
@@ -281,7 +281,7 @@ def handle_message(event):
             )
             return
 
-        # SET [BOSS名稱|ALL] [分鐘|HALF]；同時相容舊式 K SET / KSET
+        # SET [BOSS名稱|ALL] [分鐘|HALF|DEFAULT]
         if raw_msg.startswith("SET "):
             setting_text = raw_msg[len("SET "):].strip()
         elif raw_msg.startswith("K SET "):
@@ -296,7 +296,7 @@ def handle_message(event):
             if len(setting_parts) != 2 or not setting_parts[0].strip():
                 line_bot_api.reply_message(
                     event.reply_token,
-                    TextSendMessage(text="格式錯誤，請使用：\nSET 王怪名稱 分鐘或 HALF\nSET ALL 分鐘或 HALF\n例如：SET ALL HALF")
+                    TextSendMessage(text="格式錯誤，請使用：\nSET 王怪名稱 分鐘或 HALF\nSET ALL 分鐘、HALF 或 DEFAULT\n例如：SET ALL DEFAULT")
                 )
                 return
 
@@ -310,6 +310,21 @@ def handle_message(event):
                 line_bot_api.reply_message(
                     event.reply_token,
                     TextSendMessage(text="系統內目前沒有任何BOSS設定。")
+                )
+                return
+
+            # DEFAULT 的意義是刪除本群組的覆寫，讓所有王回退至 boss_config 全域設定。
+            if setting_boss_name == "ALL" and interval_value == "DEFAULT":
+                supabase.table("group_boss_settings").delete().eq("chat_id", chat_id).execute()
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(
+                        text=(
+                            f"✅ 已清除本群組全部 {len(configs)} 隻BOSS的專屬間隔設定，"
+                            "之後回報擊殺時將使用全域預設間隔。\n"
+                            "已經在倒數中的重生時間不會自動變更。"
+                        )
+                    )
                 )
                 return
 
